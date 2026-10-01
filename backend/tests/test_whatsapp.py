@@ -133,3 +133,15 @@ def test_send_failure_is_recorded_not_raised(fashion, db, monkeypatch):
     assert fashion.send("black sneakers").status_code == 200
     out = db.query(Message).filter_by(role="assistant").one()
     assert out.delivery_status == "failed" and "token" in out.attributes["error"]
+
+
+def test_conversation_messages_are_strictly_ordered(fashion, outbox):
+    """Regression: messages written in one transaction must not share a timestamp (now() vs clock_timestamp())."""
+    for t in ("black sneakers under 100k", "add 2", "show my cart"):
+        fashion.send(t)
+    conv = fashion.get("/api/conversations").json()[0]
+    msgs = [m for m in fashion.get(f"/api/conversations/{conv['id']}").json()["messages"]
+            if m["role"] in ("customer", "assistant")]
+    assert [m["role"] for m in msgs] == ["customer", "assistant"] * 3
+    stamps = [m["created_at"] for m in msgs]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)

@@ -52,7 +52,10 @@ class Message(IdMixin, TenantMixin, Base):
     wa_message_id: Mapped[str | None] = mapped_column(String(128))
     delivery_status: Mapped[str | None] = mapped_column(String(20))  # received|sent|simulated|failed
     agent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # clock_timestamp(), not now(): now() is the transaction start, so every message written in one
+    # webhook transaction would tie and the conversation order would be undefined.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(),
+                                                 nullable=False)
 
 
 class AgentRun(IdMixin, TenantMixin, Base):
@@ -76,4 +79,7 @@ class AgentRun(IdMixin, TenantMixin, Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     llm_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # clock_timestamp(), not now(): now() is the transaction start, so every message written in one
+    # webhook transaction would tie and the conversation order would be undefined.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(),
+                                                 nullable=False)
