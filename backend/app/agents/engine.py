@@ -10,20 +10,25 @@ Tool results are kept only within the current turn.
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agents.intents import classify_confirmation, wants_human
 from app.agents.providers import LLMError, LLMProvider, get_llm_provider
 from app.core.config import settings
+from app.core.errors import DomainError
 from app.core.logging import get_logger, log_event
 from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo
-from app.services.commerce_service import CartService, OrderService, money
+from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
 from app.tools.registry import ToolContext, execute_tool, tools_for
+from app.workflows.handoff import HANDOFF_REPLY, request_human
+from app.workflows.orders import order_placed_text, place_confirmed_order
 
 logger = get_logger(__name__)
 GREETING_RE = re.compile(r"^\s*(hi|hello|hey|hola|bonjour|muraho|mwaramutse|habari|good (morning|afternoon|evening))"
@@ -37,6 +42,10 @@ class AgentOutcome:
     text: str
     run: AgentRun
     handed_off: bool = False
+    # Set when this reply IS a checkout summary: the caller links the sent message to the checkout, so only a
+    # later customer YES to that delivered summary can place the order.
+    checkout_cart_id: uuid.UUID | None = None
+    order_id: uuid.UUID | None = None
 
 
 def build_system_prompt(business: Business, cfg: AgentConfig) -> str:
@@ -45,9 +54,11 @@ def build_system_prompt(business: Business, cfg: AgentConfig) -> str:
         "Get every fact from tools.",
         "For product questions call search_products first. Refer to products by their list position.",
         "For totals or delivery fees call calculate_cart_total / calculate_delivery. Never do arithmetic yourself.",
-        "Call create_order only after the customer clearly asks to order/confirm.",
-        "Only say an order is paid when a tool returns status 'paid'. After initiate_payment, tell the customer "
-        "to approve on their phone.",
+        "You cannot place orders. When the customer wants to order, call prepare_checkout (first ask for their "
+        "delivery address if delivery applies). The system then sends the exact summary itself and places the "
+        "order only if the customer replies YES.",
+        "Only say an order is paid when a tool returns payment_status 'paid'. For payment, share only what "
+        "initiate_payment returns. If the customer sends a transaction ID, call submit_payment_reference.",
         "For policy/FAQ questions call search_knowledge. If nothing is found, say you are not sure.",
         "If a tool returns ok=false, explain the problem simply and suggest a next step.",
     ]
@@ -89,6 +100,7 @@ class AgentEngine:
         cart = carts.get_active(customer, conv, create=False)
         if cart and cart.items:
             lines.append(f"Cart has {sum(i.quantity for i in cart.items)} item(s).")
+            state["cart_items"] = sum(i.quantity for i in cart.items)
         unpaid = OrderService(self.db, self.business.id).latest_unpaid(customer)
         if unpaid:
             lines.append(f"Latest unpaid order: {unpaid.order_number} ({unpaid.status}, "
@@ -155,9 +167,17 @@ class AgentEngine:
         prompt_tokens = completion_tokens = 0
         text: str | None = None
         handed_off = False
+        outcome = AgentOutcome(text="", run=run)
+        checkout_summary: tuple[str, str] | None = None  # (summary text, cart id) from prepare_checkout
 
+        # Deterministic steps first: order confirmation and "talk to a person" never depend on the LLM.
+        deterministic = self._deterministic_turn(customer, conv, trigger, outcome)
+        if deterministic is not None:
+            text, run.status, step = deterministic
+            steps.append({"type": "deterministic", **step})
+            handed_off = outcome.handed_off
         # Cost control: a bare greeting never needs the LLM.
-        if GREETING_RE.match(trigger.content or ""):
+        elif GREETING_RE.match(trigger.content or ""):
             text = self.cfg.greeting
             run.status = "fast_path"
             steps.append({"type": "fast_path", "reason": "greeting"})
@@ -188,6 +208,8 @@ class AgentEngine:
                     for call in resp.tool_calls:
                         result, latency = execute_tool(ctx, call.name, call.arguments)
                         handed_off = handed_off or (call.name == "handoff_to_human" and result.get("ok"))
+                        if call.name == "prepare_checkout" and result.get("ok"):
+                            checkout_summary = (result["summary_text"], result["cart"]["cart_id"])
                         result_json = json.dumps(result, default=str)
                         steps.append({"type": "tool", "tool": call.name, "arguments": call.arguments,
                                       "ok": result.get("ok"), "error": result.get("error"),
@@ -208,6 +230,10 @@ class AgentEngine:
                 run.error = f"{type(exc).__name__}: {str(exc)[:500]}"
                 steps.append({"type": "error", "error": run.error})
                 log_event(logger, "agent.error", 40, operation="agent.run", status="error", error=run.error)
+            if checkout_summary is not None:
+                # The customer confirms exactly what the server computed, never a paraphrase by the model.
+                text, outcome.checkout_cart_id = checkout_summary[0], uuid.UUID(checkout_summary[1])
+                steps.append({"type": "checkout_summary", "cart_id": checkout_summary[1]})
         if not text:
             text = self.cfg.fallback_message
         run.steps = steps
@@ -218,7 +244,47 @@ class AgentEngine:
         self.db.flush()
         log_event(logger, "agent.run", operation="agent.run", status=run.status, duration_ms=run.latency_ms,
                   llm_calls=run.llm_calls, tools=[s["tool"] for s in steps if s["type"] == "tool"])
-        return AgentOutcome(text=text, run=run, handed_off=handed_off)
+        outcome.text, outcome.handed_off = text, handed_off
+        return outcome
+
+    def _deterministic_turn(self, customer: Customer, conv: Conversation, trigger: Message,
+                            outcome: AgentOutcome) -> tuple[str, str, dict[str, Any]] | None:
+        """(reply, run status, debug step) when the turn is handled without the LLM, else None."""
+        checkout = CheckoutService(self.db, self.business.id)
+        if checkout.pending(customer):
+            answer = classify_confirmation(trigger.content)
+            if answer == "yes":
+                try:
+                    with self.db.begin_nested():  # a failure mid-way (e.g. stock race) leaves no partial order
+                        order = place_confirmed_order(self.db, self.business, customer, conv, trigger)
+                except CheckoutChanged as exc:
+                    checkout.cancel(customer)
+                    try:
+                        with self.db.begin_nested():
+                            summary = checkout.prepare(customer, conv)
+                    except DomainError as exc2:
+                        return f"{exc.message} {exc2.message}", "checkout_changed", {"reason": exc.message}
+                    outcome.checkout_cart_id = summary.cart_id
+                    return (f"{exc.message} Here is the updated summary:\n\n{summary.text}", "checkout_changed",
+                            {"reason": exc.message})
+                except DomainError as exc:
+                    return f"Sorry — I couldn't place the order: {exc.message}", "checkout_failed", {"reason": exc.message}
+                outcome.order_id = order.id
+                self.convs.set_state(conv, last_order=order.order_number)
+                return order_placed_text(order, self.business), "order_confirmed", {"order_number": order.order_number}
+            if answer == "no":
+                checkout.cancel(customer)
+                return ("No problem — the order was not placed. What would you like to change?",
+                        "checkout_declined", {})
+        if wants_human(trigger.content):
+            if self.business.human_handoff_enabled:
+                request_human(self.db, self.business, conv, "Customer asked for a person")
+                outcome.handed_off = True
+                return HANDOFF_REPLY, "handoff", {"reason": "customer asked for a person"}
+            contact = f" You can reach us at {self.business.phone}." if self.business.phone else ""
+            return (f"Our team isn't available on this chat right now.{contact}", "handoff_unavailable",
+                    {"reason": "handoff disabled"})
+        return None
 
 
 __all__ = ["AgentEngine", "AgentOutcome", "build_system_prompt"]

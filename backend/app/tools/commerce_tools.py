@@ -8,7 +8,7 @@ from sqlalchemy import func
 
 from app.core.errors import NotFoundError, ValidationError
 from app.models import Product
-from app.services.commerce_service import CartService, DeliveryService, OrderService
+from app.services.commerce_service import CartService, CheckoutService, DeliveryService, OrderService
 from app.services.conversation_service import ConversationService
 from app.services.knowledge_service import KnowledgeService
 from app.services.payment_service import PaymentService
@@ -59,7 +59,8 @@ def _cart_payload(ctx: ToolContext, location: str | None = None) -> dict[str, An
 
 
 def _order_dict(o) -> dict[str, Any]:
-    return {"order_number": o.order_number, "status": o.status, "currency": o.currency,
+    return {"order_number": o.order_number, "status": o.status, "payment_status": o.payment_status,
+            "currency": o.currency,
             "subtotal": float(o.subtotal), "delivery_fee": float(o.delivery_fee), "discount": float(o.discount),
             "total": float(o.total), "delivery_zone": o.delivery_zone_name,
             "items": [{"name": i.product_name, "quantity": i.quantity, "unit_price": float(i.unit_price),
@@ -96,8 +97,10 @@ class TotalArgs(BaseModel):
     delivery_location: str | None = Field(None, description="Customer's delivery area/address if known")
 
 
-class CreateOrderArgs(BaseModel):
-    delivery_location: str | None = Field(None, description="Delivery area/address (required if not given before)")
+class CheckoutArgs(BaseModel):
+    delivery_address: str | None = Field(None, max_length=300, description="The customer's delivery address "
+                                         "(area + street or landmark), exactly as they gave it. Required when "
+                                         "delivery applies; never invent it.")
     notes: str | None = Field(None, max_length=500)
 
 
@@ -112,6 +115,12 @@ class DeliveryArgs(BaseModel):
 class PaymentArgs(BaseModel):
     order_number: str | None = Field(None, description="Order to pay. Omit to pay the latest unpaid order.")
     phone_number: str | None = Field(None, description="Mobile money number. Omit to use the customer's WhatsApp number.")
+
+
+class PaymentReferenceArgs(BaseModel):
+    reference: str = Field(..., min_length=4, max_length=128,
+                           description="The transaction ID/reference the customer sent after paying")
+    order_number: str | None = Field(None, description="Omit for the latest unpaid order.")
 
 
 class HandoffArgs(BaseModel):
@@ -202,11 +211,14 @@ def calculate_delivery(ctx: ToolContext, a: DeliveryArgs) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- order tools
-def create_order(ctx: ToolContext, a: CreateOrderArgs) -> dict[str, Any]:
-    order = OrderService(ctx.db, ctx.business_id).create_from_cart(
-        ctx.customer, ctx.conversation, delivery_location=a.delivery_location, notes=a.notes)
-    ConversationService(ctx.db, ctx.business_id).set_state(ctx.conversation, last_order=order.order_number)
-    return {"order": _order_dict(order), "payment_enabled": ctx.business.payment_enabled}
+def prepare_checkout(ctx: ToolContext, a: CheckoutArgs) -> dict[str, Any]:
+    """Prepares the summary the customer must confirm. It does NOT place the order: the system sends the
+    summary itself and places the order only when the customer replies YES in their next message."""
+    summary = CheckoutService(ctx.db, ctx.business_id).prepare(ctx.customer, ctx.conversation,
+                                                                delivery_address=a.delivery_address, notes=a.notes)
+    return {"summary_text": summary.text, "cart": summary.totals.as_dict(), "delivery_address": summary.delivery_address,
+            "awaiting_customer_confirmation": True,
+            "note": "The order is NOT placed. The system sends this summary to the customer, who must reply YES."}
 
 
 def _find_order(ctx: ToolContext, number: str | None):
@@ -241,7 +253,7 @@ def check_order_status(ctx: ToolContext, a: OrderNumberArgs) -> dict[str, Any]:
             pass
         ctx.db.refresh(order)
     return {"order_number": order.order_number, "status": order.status, "total": float(order.total),
-            "currency": order.currency, "payment_status": latest.status if latest else None}
+            "currency": order.currency, "payment_status": order.payment_status}
 
 
 def initiate_payment(ctx: ToolContext, a: PaymentArgs) -> dict[str, Any]:
@@ -250,15 +262,37 @@ def initiate_payment(ctx: ToolContext, a: PaymentArgs) -> dict[str, Any]:
         else svc.latest_unpaid(ctx.customer)
     if order is None:
         raise ValidationError("There is no unpaid order. Place an order first.")
-    payment = PaymentService(ctx.db, ctx.business_id).initiate(order, a.phone_number or ctx.customer.whatsapp_number)
+    payments = PaymentService(ctx.db, ctx.business_id)
+    if payments.provider_name() == "manual":
+        from app.workflows.orders import payment_instructions
+        payments._payable(order)
+        instructions = payment_instructions(ctx.db, ctx.business)
+        return {"order_number": order.order_number, "amount": float(order.total), "currency": order.currency,
+                "provider": "manual", "payment_status": order.payment_status,
+                "instructions": instructions or "The shop will share how to pay. Do not invent payment details.",
+                "note": "No payment request was sent. Only the shop can confirm a payment."}
+    payment = payments.initiate(order, a.phone_number or ctx.customer.whatsapp_number)
     return {"order_number": order.order_number, "amount": float(payment.amount), "currency": payment.currency,
             "payment_status": payment.status, "provider": payment.provider, "payer_phone": payment.payer_phone,
             "instructions": "A payment request was sent. The customer must approve it on their phone. "
                             "The order is NOT paid until the provider confirms."}
 
 
+def submit_payment_reference(ctx: ToolContext, a: PaymentReferenceArgs) -> dict[str, Any]:
+    from app.workflows.orders import customer_reported_payment
+    svc = OrderService(ctx.db, ctx.business_id)
+    order = svc.get_by_number(a.order_number, customer=ctx.customer) if a.order_number \
+        else svc.latest_unpaid(ctx.customer)
+    if order is None:
+        raise ValidationError("There is no unpaid order.")
+    customer_reported_payment(ctx.db, ctx.business_id, ctx.customer, order, a.reference)
+    return {"order_number": order.order_number, "payment_status": "pending",
+            "note": "Recorded for the shop to verify. The order is NOT paid until the shop confirms."}
+
+
 def handoff_to_human(ctx: ToolContext, a: HandoffArgs) -> dict[str, Any]:
-    ConversationService(ctx.db, ctx.business_id).handoff(ctx.conversation, a.reason)
+    from app.workflows.handoff import request_human
+    request_human(ctx.db, ctx.business, ctx.conversation, a.reason)
     return {"handed_off": True}
 
 
@@ -286,12 +320,16 @@ for _t in [
          calculate_cart_total),
     Tool("calculate_delivery", "Delivery fee and ETA for a location.", DeliveryArgs, calculate_delivery,
          enabled_if=_delivery),
-    Tool("create_order", "Place an order from the cart (only when the customer confirms).", CreateOrderArgs,
-         create_order, mutates=True),
+    Tool("prepare_checkout", "When the customer wants to order: prepare the order summary for them to confirm. "
+         "Needs their delivery address when delivery applies. It does not place the order.", CheckoutArgs,
+         prepare_checkout, mutates=True),
     Tool("get_order", "Get an order's details.", OrderNumberArgs, get_order),
     Tool("get_customer_orders", "List the customer's recent orders.", NoArgs, get_customer_orders),
     Tool("check_order_status", "Current status of an order and its payment.", OrderNumberArgs, check_order_status),
-    Tool("initiate_payment", "Send a mobile-money payment request for an order.", PaymentArgs, initiate_payment,
+    Tool("initiate_payment", "How to pay an order (payment instructions or a mobile-money request).", PaymentArgs,
+         initiate_payment, mutates=True, enabled_if=_payment),
+    Tool("submit_payment_reference", "Record the transaction reference a customer sends after paying, for the "
+         "shop to verify. It never marks the order paid.", PaymentReferenceArgs, submit_payment_reference,
          mutates=True, enabled_if=_payment),
     Tool("handoff_to_human", "Transfer to a human staff member (complaints, explicit request, unresolved issues).",
          HandoffArgs, handoff_to_human, mutates=True, enabled_if=_handoff),

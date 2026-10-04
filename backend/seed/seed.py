@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.db.session import session_scope
 from app.models import User
 from app.services.business_service import BusinessConfigService, register_business
-from app.services.commerce_service import CartService, OrderService
+from app.services.commerce_service import CartService, CheckoutService, OrderService
 from app.services.conversation_service import ConversationService, CustomerService
 from app.services.knowledge_service import KnowledgeService
 from app.services.product_service import ProductService
@@ -31,6 +31,7 @@ TENANTS = [
         "knowledge": [("Delivery & returns", "We deliver within Kigali only, same day for orders before 3pm. "
                                              "Unopened items can be returned within 7 days.")],
         "whatsapp": {"phone_number_id": "dev-demo-store", "display_phone_number": "+250 700 000 001"},
+        "settings": {"payment_instructions": "MTN MoMo to 0788 000 001 (Demo Store)"},
         "sample_orders": True,
     },
     {
@@ -59,6 +60,7 @@ TENANTS = [
                                       "Refunds are issued to mobile money within 3 working days."),
         ],
         "whatsapp": {"phone_number_id": "dev-kigali-fashion", "display_phone_number": "+250 700 000 002"},
+        "settings": {"payment_instructions": "MTN MoMo to 0788 123 456 (Kigali Fashion Ltd)"},
     },
     {
         "business_name": "Mama's Electronics", "email": "electronics@duka.dev", "business_type": "electronics",
@@ -77,6 +79,7 @@ TENANTS = [
                                    "receipt to our downtown shop."),
                       ("Delivery", "We deliver within Kigali only, within 24 hours, for 3,000 RWF.")],
         "whatsapp": {"phone_number_id": "dev-mamas-electronics", "display_phone_number": "+250 700 000 003"},
+        "settings": {"payment_instructions": "MTN MoMo to 0788 654 321 (Mama's Electronics)"},
     },
 ]
 
@@ -92,6 +95,7 @@ def seed_tenant(db, t: dict) -> str:
     for z in t["zones"]:
         cfg.upsert_delivery_zone(z)
     cfg.connect_whatsapp(mode="dev", access_token=None, waba_id=None, **t["whatsapp"])
+    cfg.update_settings(t.get("settings", {}))
     result = ProductService(db, business.id).import_csv((DATA / t["csv"]).read_bytes())
     if result.errors:
         raise RuntimeError(f"Seed CSV invalid for {t['business_name']}: {result.errors}")
@@ -112,7 +116,8 @@ def _sample_orders(db, business_id) -> None:
         carts = CartService(db, business_id)
         cart = carts.get_active(c, conv)
         carts.add_item(cart, products[i], 1)
-        OrderService(db, business_id).create_from_cart(c, conv, delivery_location="Remera")
+        CheckoutService(db, business_id).prepare(c, conv, delivery_address="Remera, KG 11 Ave")
+        OrderService(db, business_id).create_from_cart(c, conv)
 
 
 def main() -> None:

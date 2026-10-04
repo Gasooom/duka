@@ -2,6 +2,7 @@
 from app.models import (
     AgentConfig,
     AgentRun,
+    AuditEvent,
     BusinessSettings,
     Cart,
     CartItem,
@@ -12,6 +13,7 @@ from app.models import (
     KnowledgeChunk,
     KnowledgeDocument,
     Message,
+    Notification,
     Order,
     OrderItem,
     Payment,
@@ -102,3 +104,11 @@ class KnowledgeChunkRepo(TenantRepository[KnowledgeChunk]):
 
 class WebhookEventRepo(TenantRepository[WebhookEvent]):
     model = WebhookEvent
+
+
+class AuditEventRepo(TenantRepository[AuditEvent]):
+    model = AuditEvent
+
+
+class NotificationRepo(TenantRepository[Notification]):
+    model = Notification

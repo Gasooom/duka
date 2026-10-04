@@ -18,7 +18,9 @@ BUSINESS_FIELDS = {
 }
 AGENT_FIELDS = {"system_prompt", "tone", "language", "greeting", "fallback_message", "business_rules", "model",
                 "temperature", "max_history_messages"}
-SETTINGS_FIELDS = {"payment_provider", "low_stock_threshold", "max_order_quantity"}
+SETTINGS_FIELDS = {"payment_provider", "payment_instructions", "owner_notification_phone",
+                   "owner_notification_template", "owner_notification_template_language", "low_stock_threshold",
+                   "max_order_quantity"}
 
 
 def _slugify(name: str) -> str:
@@ -106,12 +108,22 @@ class BusinessConfigService:
         return s or repo.add()
 
     def update_settings(self, data: dict[str, Any]) -> BusinessSettings:
+        from app.core.config import settings as app_settings
+        from app.services.conversation_service import normalize_phone
         s = self.settings()
-        if "payment_provider" in data and data["payment_provider"] not in (None, "mock", "momo"):
-            raise ValidationError("payment_provider must be 'mock' or 'momo'")
+        provider = data.get("payment_provider")
+        if provider not in (None, "manual", "mock", "momo"):
+            raise ValidationError("payment_provider must be 'manual', 'momo' or 'mock'")
+        if provider == "mock" and app_settings.is_production:
+            raise ValidationError("The mock payment provider is for development only")
+        if provider == "momo" and not (app_settings.momo_subscription_key and app_settings.momo_api_user
+                                       and app_settings.momo_api_key):
+            raise ValidationError("MTN MoMo is not configured on this platform yet; use manual payments")
+        if data.get("owner_notification_phone"):
+            data["owner_notification_phone"] = normalize_phone(data["owner_notification_phone"])
         for k, v in data.items():
             if k in SETTINGS_FIELDS and v is not None:
-                setattr(s, k, v)
+                setattr(s, k, (v.strip() or None) if isinstance(v, str) and k != "payment_provider" else v)
         self.db.flush()
         return s
 

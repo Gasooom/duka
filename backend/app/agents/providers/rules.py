@@ -18,6 +18,10 @@ PRICE_RE = re.compile(
     r"([\d][\d,\.]*)\s*(k|000)?", re.I)
 ORDER_NO_RE = re.compile(r"\b([A-Z]{1,6}-\d{3,})\b", re.I)
 LOCATION_RE = re.compile(r"\b(?:deliver(?:ed|y)?\s+to|to|in|at)\s+([A-Za-z][A-Za-z\s\-]{2,40})$", re.I)
+ADDRESS_RE = re.compile(r"\b(?:deliver(?:ed|y)?\s+(?:it\s+)?to|my address is|address(?: is)?:?|ship\s+to)\s*:?\s+(.{3,200})$",
+                        re.I)
+PAYMENT_REF_RE = re.compile(r"\b(?:transaction(?: id)?|txn(?: id)?|ref(?:erence)?|momo ref)\b\s*(?:id|is|:|#)?\s*"
+                            r"([A-Za-z0-9][A-Za-z0-9\-\.]{3,})", re.I)
 
 
 def _price(text: str) -> float | None:
@@ -89,6 +93,14 @@ class RulesProvider(LLMProvider):
 
         if ok("handoff_to_human") and re.search(r"\b(human|real person|agent|staff|manager|complain|complaint)\b", t):
             return "handoff_to_human", {"reason": text[:200]}
+        ref = PAYMENT_REF_RE.search(text)
+        if ok("submit_payment_reference") and ref and re.search(r"\b(paid|sent|transaction|txn|ref)", t):
+            m = ORDER_NO_RE.search(text.replace(ref.group(1), ""))  # the reference itself may look like one
+            return "submit_payment_reference", {k: v for k, v in {"reference": ref.group(1),
+                                                                   "order_number": m.group(1) if m else None}.items() if v}
+        address = ADDRESS_RE.search(text.strip())
+        if state.get("cart_items") and address:
+            return "prepare_checkout", {"delivery_address": address.group(1).strip(" .!")}
         if ok("initiate_payment") and re.search(r"^(pay|pay now|i want to pay|i'?ll pay|make (a )?payment|checkout and pay)\b|\bpay (for )?(it|the order|my order|now)\b", t):
             m = ORDER_NO_RE.search(text)
             phone = re.search(r"\b(\+?\d{9,15})\b", text)
@@ -101,7 +113,7 @@ class RulesProvider(LLMProvider):
             return "check_order_status", {"order_number": m.group(1)} if m else {}
         if re.search(r"\b(place|confirm|make|complete|submit)\b.{0,20}\border\b|\bcheck ?out\b|\border it\b", t):
             loc = _location(text)
-            return "create_order", {"delivery_location": loc} if loc else {}
+            return "prepare_checkout", {"delivery_address": loc} if loc else {}
         if re.search(r"\b(clear|empty)\b.{0,15}\b(cart|basket)\b", t):
             return "clear_cart", {}
         if re.search(r"\b(remove|delete|take out)\b", t):

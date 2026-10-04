@@ -171,3 +171,14 @@ def electronics(client):
 
 def mock_signature(body: bytes) -> str:
     return hmac.new(b"test-payment-secret", body, hashlib.sha256).hexdigest()
+
+
+ADDRESS = "Remera, KG 11 Ave"
+
+
+def place_order(t: "Tenant", number: str = "250788111222", query: str = "black sneakers under 100k",
+                pick: str = "add 1", address: str = ADDRESS) -> dict:
+    """Customer flow up to a confirmed order: search -> add -> address (summary) -> explicit YES."""
+    for m in (query, pick, f"deliver to {address}", "yes"):
+        t.send(m, from_number=number)
+    return t.get("/api/orders").json()[0]

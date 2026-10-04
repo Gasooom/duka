@@ -55,12 +55,29 @@ def test_unknown_phone_number_id_is_dropped(client, outbox):
     assert r.status_code == 200 and outbox.sent == []
 
 
-def test_non_text_message_gets_polite_reply(fashion, outbox, client):
+def _media(fashion, client, mtype, wa_id):
     payload = {"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {
         "metadata": {"phone_number_id": fashion.phone_number_id},
-        "messages": [{"from": "250788111222", "id": "wimg", "type": "image", "image": {"id": "x"}}]}}]}]}
+        "messages": [{"from": "250788111222", "id": wa_id, "type": mtype, mtype: {"id": "x"}}]}}]}]}
     client.post("/webhooks/whatsapp", json=payload)
     drain()
+
+
+def test_voice_notes_and_media_go_to_a_human_not_a_guess(fashion, outbox, client):
+    _media(fashion, client, "audio", "wvoice")
+    assert "can't open voice notes" in outbox.sent[0][1] and "passed it to our team" in outbox.sent[0][1]
+    conv = fashion.get("/api/conversations").json()[0]
+    assert conv["status"] == "human" and conv["needs_attention"] is True
+    assert "voice notes" in conv["handoff_reason"]
+    _media(fashion, client, "image", "wimg")  # AI stays silent while a person handles it
+    assert len(outbox.sent) == 1
+
+
+def test_media_without_handoff_gets_text_only_reply_and_reactions_are_ignored(fashion, outbox, client):
+    fashion.patch("/api/business", json={"human_handoff_enabled": False})
+    _media(fashion, client, "reaction", "wreact")
+    assert outbox.sent == []
+    _media(fashion, client, "image", "wimg")
     assert "only read text" in outbox.sent[0][1]
 
 

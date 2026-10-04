@@ -71,15 +71,15 @@ def test_ingest_failure_returns_5xx_so_meta_redelivers(fashion, outbox, db, monk
 
 
 def test_failure_after_order_creation_rolls_back_everything_and_retries(fashion, outbox, db, monkeypatch):
-    fashion.send("black sneakers")
-    fashion.send("add 1")
+    for t in ("black sneakers", "add 1", "deliver to Remera, KG 11 Ave"):
+        fashion.send(t)
     sent = len(outbox.sent)
 
     def crash(*args, **kwargs):
         raise RuntimeError("crash after the agent created the order")
 
     monkeypatch.setattr(inbound, "send_to_customer", crash)
-    fashion.send("place the order", wa_id="wamid.PLACE")
+    fashion.send("yes", wa_id="wamid.PLACE")
     assert _count(db, Order) == 0, "order must roll back with the failed turn"
     assert _count(db, Message, Message.wa_message_id == "wamid.PLACE") == 0
     assert len(outbox.sent) == sent, "nothing may be sent for a rolled-back turn"
@@ -90,7 +90,7 @@ def test_failure_after_order_creation_rolls_back_everything_and_retries(fashion,
     _make_due(db)
     drain()
     assert _count(db, Order) == 1
-    assert len(outbox.sent) == sent + 1 and "placed" in outbox.sent[-1][1]
+    assert len(outbox.sent) == sent + 1 and "confirmed" in outbox.sent[-1][1]
     [event] = _events(db, external_id="wamid.PLACE")
     assert event.status == "done" and event.attempts == 2
 
@@ -234,7 +234,7 @@ def test_permanent_send_failure_is_flagged_not_retried(fashion, db):
 
 
 def test_reply_committed_but_not_sent_is_delivered_by_the_worker(fashion, outbox, db, monkeypatch):
-    monkeypatch.setattr(inbound, "deliver", lambda ids, sf=None: None)  # process dies between commit and send
+    monkeypatch.setattr(inbound, "deliver_outbox", lambda outbox, sf=None: None)  # process dies between commit and send
     fashion.send("black sneakers")
     assert outbox.sent == [] and _reply(db).delivery_status == "queued"
     monkeypatch.undo()
@@ -245,7 +245,7 @@ def test_reply_committed_but_not_sent_is_delivered_by_the_worker(fashion, outbox
 
 
 def test_send_interrupted_midway_is_not_blindly_resent(fashion, outbox, db, monkeypatch):
-    monkeypatch.setattr(inbound, "deliver", lambda ids, sf=None: None)
+    monkeypatch.setattr(inbound, "deliver_outbox", lambda outbox, sf=None: None)
     fashion.send("black sneakers")
     msg = _reply(db)
     db.execute(update(Message).where(Message.id == msg.id).values(

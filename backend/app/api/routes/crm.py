@@ -3,10 +3,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import TenantContext, get_tenant
-from app.schemas.api import AgentRunOut, CustomerOut, HumanReplyIn, MessageOut, OrderOut
+from app.schemas.api import AgentRunOut, CustomerOut, HumanReplyIn, MessageOut, OrderOut, ReturnToAiIn
 from app.services.commerce_service import OrderService
 from app.services.conversation_service import ConversationService, CustomerService
 from app.services.messaging_service import commit_and_deliver, send_to_customer
+from app.workflows.handoff import staff_return_to_ai, staff_take_over
 
 router = APIRouter(prefix="/api", tags=["customers", "conversations"])
 
@@ -75,18 +76,20 @@ def human_reply(conversation_id: uuid.UUID, body: HumanReplyIn, ctx: TenantConte
 
 @router.post("/conversations/{conversation_id}/handoff")
 def take_over(conversation_id: uuid.UUID, ctx: TenantContext = Depends(get_tenant)):
-    svc = ConversationService(ctx.db, ctx.business_id)
-    conv = svc.get(conversation_id)
-    svc.handoff(conv, f"Taken over by {ctx.user.email}")
-    conv.needs_attention = False
+    """Staff takes over: the AI stays silent for this conversation until someone returns it to AI."""
+    conv = ConversationService(ctx.db, ctx.business_id).get(conversation_id)
+    staff_take_over(ctx.db, ctx.user, conv)
     ctx.db.commit()
     return {"status": conv.status}
 
 
 @router.post("/conversations/{conversation_id}/return-to-ai")
-def return_to_ai(conversation_id: uuid.UUID, ctx: TenantContext = Depends(get_tenant)):
-    svc = ConversationService(ctx.db, ctx.business_id)
-    conv = svc.get(conversation_id)
-    svc.return_to_ai(conv)
-    ctx.db.commit()
+def return_to_ai(conversation_id: uuid.UUID, body: ReturnToAiIn | None = None,
+                 ctx: TenantContext = Depends(get_tenant)):
+    """The only way the assistant resumes after a handoff. Optionally tells the customer."""
+    conv = ConversationService(ctx.db, ctx.business_id).get(conversation_id)
+    if conv.status != "human":
+        raise HTTPException(400, "The assistant is already handling this conversation")
+    staff_return_to_ai(ctx.db, ctx.user, conv, body.message if body else None)
+    commit_and_deliver(ctx.db)
     return {"status": conv.status}

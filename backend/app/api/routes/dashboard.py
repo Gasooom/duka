@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 
 from app.api.deps import TenantContext, get_tenant
-from app.models import AgentRun, Message, Order
-from app.repositories.repos import AgentRunRepo, MessageRepo
-from app.schemas.api import OrderOut, ProductOut
+from app.models import AgentRun, AuditEvent, Message, Notification, Order
+from app.models.commerce import ORDER_STATUSES
+from app.repositories.repos import AgentRunRepo, AuditEventRepo, MessageRepo, NotificationRepo
+from app.schemas.api import AuditEventOut, NotificationOut, OrderOut, ProductOut
 from app.services.commerce_service import OrderService
 from app.services.conversation_service import ConversationService, CustomerService
 from app.services.payment_service import PaymentService
@@ -21,13 +22,13 @@ def stats(ctx: TenantContext = Depends(get_tenant)):
     orders = OrderService(ctx.db, ctx.business_id)
     products = ProductService(ctx.db, ctx.business_id)
     convs = ConversationService(ctx.db, ctx.business_id)
-    status_counts = {s: orders.orders.count(Order.status == s) for s in
-                     ("pending", "awaiting_payment", "paid", "processing", "ready", "out_for_delivery", "delivered",
-                      "cancelled")}
+    status_counts = {s: orders.orders.count(Order.status == s) for s in ORDER_STATUSES}
     return {
         "currency": ctx.business.currency,
         "orders_total": orders.orders.count(),
         "orders_by_status": status_counts,
+        "orders_awaiting_review": status_counts["pending"],
+        "orders_unpaid": orders.orders.count(Order.payment_status != "paid", Order.status != "cancelled"),
         "revenue": float(orders.revenue()),
         "customers": CustomerService(ctx.db, ctx.business_id).repo.count(),
         "messages": convs.message_total(),
@@ -58,3 +59,14 @@ def usage(days: int = Query(30, ge=1, le=366), ctx: TenantContext = Depends(get_
         "messages_in": messages.count(Message.role == "customer", Message.created_at >= since),
         "messages_out": messages.count(Message.role.in_(("assistant", "human_agent")), Message.created_at >= since),
     }
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def notifications(limit: int = Query(50, ge=1, le=200), ctx: TenantContext = Depends(get_tenant)):
+    """Owner notifications (new orders, handoffs, reported payments) and whether they reached WhatsApp."""
+    return NotificationRepo(ctx.db, ctx.business_id).list(order_by=[Notification.created_at.desc()], limit=limit)
+
+
+@router.get("/audit", response_model=list[AuditEventOut])
+def audit(limit: int = Query(100, ge=1, le=500), ctx: TenantContext = Depends(get_tenant)):
+    return AuditEventRepo(ctx.db, ctx.business_id).list(order_by=[AuditEvent.created_at.desc()], limit=limit)

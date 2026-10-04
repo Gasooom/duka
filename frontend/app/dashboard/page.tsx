@@ -25,7 +25,7 @@ export default function Overview() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Stat label="Revenue (paid)" value={money(s.revenue, s.currency)} />
             <Stat label="Orders" value={s.orders_total} href="/dashboard/orders" />
-            <Stat label="Pending payments" value={s.pending_payments} href="/dashboard/orders?status=awaiting_payment" tone="warn" />
+            <Stat label="Orders to review" value={s.orders_awaiting_review} href="/dashboard/orders?status=pending" tone="warn" />
             <Stat label="Needs human attention" value={s.needs_attention} href="/dashboard/conversations?attention=1" tone="warn" />
             <Stat label="Customers" value={s.customers} href="/dashboard/customers" />
             <Stat label="Messages" value={s.messages} href="/dashboard/conversations" />

@@ -47,7 +47,15 @@ class BusinessSettings(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "business_settings"
     __table_args__ = (UniqueConstraint("business_id"),)
 
-    payment_provider: Mapped[str] = mapped_column(String(30), default="mock", nullable=False)  # mock | momo
+    # manual (owner records payments; default) | momo | mock (development only)
+    payment_provider: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
+    payment_instructions: Mapped[str | None] = mapped_column(Text)  # e.g. "MoMo 0788... (Name), send the ref"
+    # Where new orders / handoffs are announced. Outside WhatsApp's 24h window Meta requires an approved
+    # template: set its name (one body parameter = the notification text) and language.
+    owner_notification_phone: Mapped[str | None] = mapped_column(String(32))
+    owner_notification_template: Mapped[str | None] = mapped_column(String(100))
+    owner_notification_template_language: Mapped[str] = mapped_column(String(10), default="en",
+                                                                       server_default="en", nullable=False)
     low_stock_threshold: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     max_order_quantity: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

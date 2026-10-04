@@ -19,7 +19,10 @@ def render_cart(cart: dict[str, Any], *, with_delivery: bool = True) -> str:
             lines.append(f"Delivery ({cart['delivery_zone']}): {fmt(cart['delivery_fee'], cur)}")
         if cart.get("discount"):
             lines.append(f"Discount: -{fmt(cart['discount'], cur)}")
-        lines.append(f"Total: {fmt(cart['total'], cur)}")
+        if cart.get("delivery_pending"):
+            lines.append(f"Total before delivery: {fmt(cart['total'], cur)}")
+        else:
+            lines.append(f"Total: {fmt(cart['total'], cur)}")
         if cart.get("delivery_note"):
             lines.append(f"ℹ️ {cart['delivery_note']}")
     for issue in cart.get("issues") or []:
@@ -57,27 +60,30 @@ def render_tool_result(tool: str, args: dict[str, Any], r: dict[str, Any]) -> st
             return r.get("message") or "Sorry, we don't deliver there."
         eta = f" (estimated {r['estimated_time']})" if r.get("estimated_time") else ""
         return f"Delivery to {r['zone']}: {fmt(r['fee'], r['currency'])}{eta}."
-    if tool == "create_order":
-        o = r["order"]
-        items = "\n".join(f"- {i['name']} x{i['quantity']}: {fmt(i['subtotal'], o['currency'])}" for i in o["items"])
-        tail = "Reply \"pay\" to pay with mobile money." if r.get("payment_enabled") else "We'll contact you to arrange payment."
-        return (f"🧾 Order {o['order_number']} placed!\n{items}\nDelivery: {fmt(o['delivery_fee'], o['currency'])}\n"
-                f"Total: {fmt(o['total'], o['currency'])}\n{tail}")
+    if tool == "prepare_checkout":
+        return r["summary_text"]
     if tool in ("get_order", "check_order_status"):
         o = r.get("order") or r
-        pay = f" Payment: {r['payment_status']}." if r.get("payment_status") else ""
-        return f"Order {o['order_number']} is {o['status'].replace('_', ' ')}. Total {fmt(o['total'], o['currency'])}.{pay}"
+        status = "waiting for the shop's review" if o["status"] == "pending" else o["status"].replace("_", " ")
+        pay = f" Payment: {o['payment_status']}." if o.get("payment_status") else ""
+        return f"Order {o['order_number']} is {status}. Total {fmt(o['total'], o['currency'])}.{pay}"
     if tool == "get_customer_orders":
         if not r["orders"]:
             return "You don't have any orders yet."
         return "Your recent orders:\n" + "\n".join(
             f"- {o['order_number']}: {o['status'].replace('_', ' ')} ({fmt(o['total'], o['currency'])})" for o in r["orders"])
+    if tool == "submit_payment_reference":
+        return (f"Thanks! I've passed reference {args.get('reference')} for order {r['order_number']} to the shop. "
+                "They'll confirm once they have checked the payment.")
+    if tool == "initiate_payment" and r.get("provider") == "manual":
+        return (f"Order {r['order_number']}: {fmt(r['amount'], r['currency'])}.\nTo pay: {r['instructions']}\n"
+                "Reply with the transaction ID once you have paid.")
     if tool == "initiate_payment":
         return (f"📲 I've sent a mobile money request of {fmt(r['amount'], r['currency'])} to {r['payer_phone']} "
                 f"for order {r['order_number']}. Please approve it on your phone — I'll confirm as soon as the "
                 "payment is received.")
     if tool == "handoff_to_human":
-        return "I've passed your conversation to our team. A staff member will reply here shortly."
+        return "I've passed your conversation to our team. Someone will reply here shortly."
     if tool == "search_knowledge":
         if not r["results"]:
             return "I'm not sure about that. Would you like me to connect you with our team?"

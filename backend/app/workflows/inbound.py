@@ -26,10 +26,16 @@ from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
 from app.models import Business, Message, WebhookEvent, WhatsAppAccount
+from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
-from app.services.messaging_service import OUTBOX_KEY, deliver, send_to_customer
+from app.services.messaging_service import deliver_outbox, send_to_customer, take_outbox
+from app.workflows.handoff import request_human
 
 logger = get_logger(__name__)
+IGNORED_TYPES = {"reaction", "system", "ephemeral"}
+MEDIA_LABELS = {"audio": "voice notes", "voice": "voice notes", "image": "photos", "video": "videos",
+                "document": "documents", "sticker": "stickers", "location": "shared locations",
+                "contacts": "contact cards"}
 RETRY_DELAYS_SECONDS = (2, 10, 30, 120)
 # Meta status webhooks can arrive out of order; never move a message backwards (read -> delivered).
 _STATUS_RANK = {"queued": 0, "sending": 1, "retry": 1, "sent": 2, "simulated": 2, "delivered": 3, "read": 4}
@@ -157,7 +163,7 @@ def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLoc
         _record_failure(session_factory, event_id, attempts, "Exceeded max attempts (lease expired repeatedly)")
         return ProcessResult(status="error")
     db = session_factory()
-    outbox: list[uuid.UUID] = []
+    outbox = None
     try:
         event = db.get(WebhookEvent, event_id)
         msg = InboundMessage.from_payload(event.payload)
@@ -166,17 +172,17 @@ def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLoc
             ctx["result"] = result.status
         event.status, event.result = "done", result.status
         event.processed_at, event.locked_until, event.last_error = datetime.now(timezone.utc), None, None
-        outbox = db.info.pop(OUTBOX_KEY, [])
+        outbox = take_outbox(db)
         db.commit()  # inbound message, agent run, cart/order changes, queued reply and 'done' — atomically
     except Exception as exc:
         db.rollback()
-        db.info.pop(OUTBOX_KEY, None)
+        take_outbox(db)
         _record_failure(session_factory, event_id, attempts, f"{type(exc).__name__}: {exc}")
         return ProcessResult(status="error")
     finally:
         db.close()
         clear_context()
-    deliver(outbox, session_factory)
+    deliver_outbox(outbox, session_factory)
     return result
 
 
@@ -241,12 +247,22 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         return ProcessResult(status="rate_limited", business_id=business.id, conversation_id=conv.id)
 
     if not text_:
-        reply = "Sorry, I can only read text messages for now. Please type your request."
+        if msg.type in IGNORED_TYPES:  # reactions etc.: nothing to answer
+            return ProcessResult(status="ignored", business_id=business.id, conversation_id=conv.id)
+        label = MEDIA_LABELS.get(msg.type, "this kind of message")
+        if business.human_handoff_enabled:
+            # No speech-to-text / vision in the MVP: never guess what a voice note or photo says.
+            request_human(db, business, conv, f"Customer sent {label}")
+            reply = f"I can't open {label} yet, so I've passed it to our team. Someone will reply here shortly."
+        else:
+            reply = "Sorry, I can only read text messages for now. Please type your request."
         send_to_customer(db, business.id, conv, reply)
         return ProcessResult(status="unsupported", business_id=business.id, conversation_id=conv.id, reply=reply)
 
     outcome = AgentEngine(db, business).run(customer, conv, inbound)
-    send_to_customer(db, business.id, conv, outcome.text, agent_run_id=outcome.run.id)
+    sent = send_to_customer(db, business.id, conv, outcome.text, agent_run_id=outcome.run.id)
+    if outcome.checkout_cart_id:
+        CheckoutService(db, business.id).attach_summary_message(outcome.checkout_cart_id, sent.id)
     return ProcessResult(status="replied", business_id=business.id, conversation_id=conv.id, reply=outcome.text,
                          agent_run_id=outcome.run.id)
 

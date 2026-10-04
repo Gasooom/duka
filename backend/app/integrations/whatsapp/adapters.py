@@ -35,6 +35,11 @@ class WhatsAppAdapter(ABC):
     @abstractmethod
     def send_text(self, to: str, body: str) -> SendResult: ...
 
+    def send_template(self, to: str, name: str, language: str, params: list[str]) -> SendResult:
+        """Approved template message (required by Meta outside the 24h customer-service window).
+        Adapters without template support send the parameters as text."""
+        return self.send_text(to, "\n".join(params))
+
 
 class DevWhatsAppAdapter(WhatsAppAdapter):
     mode = "dev"
@@ -54,8 +59,19 @@ class CloudWhatsAppAdapter(WhatsAppAdapter):
         self.max_attempts = max_attempts
 
     def send_text(self, to: str, body: str) -> SendResult:
-        payload = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "text",
-                   "text": {"preview_url": False, "body": body[:WHATSAPP_TEXT_LIMIT]}}
+        return self._post({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "text",
+                           "text": {"preview_url": False, "body": body[:WHATSAPP_TEXT_LIMIT]}})
+
+    def send_template(self, to: str, name: str, language: str, params: list[str]) -> SendResult:
+        # Template parameters cannot contain newlines/tabs or more than 4 consecutive spaces (Meta rule).
+        clean = [" ".join(p.split())[:1000] for p in params]
+        return self._post({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to,
+                           "type": "template", "template": {
+                               "name": name, "language": {"code": language},
+                               "components": [{"type": "body", "parameters": [{"type": "text", "text": p}
+                                                                              for p in clean]}]}})
+
+    def _post(self, payload: dict) -> SendResult:
         last_error = None
         retryable = False
         for attempt in range(1, self.max_attempts + 1):

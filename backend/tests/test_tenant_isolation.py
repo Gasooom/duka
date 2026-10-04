@@ -30,12 +30,13 @@ B_CUSTOMER = "250788999000"
 
 
 def _seed_b_data(b):
-    """Give Business B a customer, conversation, order, pending payment and a knowledge doc."""
+    """Give Business B a customer, conversation, confirmed order, reported (pending) payment, owner
+    notifications, audit events and a knowledge doc."""
     b.post("/api/knowledge", json={"title": "Secret policy", "content": "B-only secret: warranty code ZEBRA-42."})
-    b.send("I want a Samsung phone under 300k", from_number=B_CUSTOMER)
-    b.send("add it", from_number=B_CUSTOMER)
-    b.send("place the order", from_number=B_CUSTOMER)
-    b.send("pay", from_number=B_CUSTOMER)
+    b.patch("/api/business/settings", json={"owner_notification_phone": "250788000444"})
+    for t in ("I want a Samsung phone under 300k", "add it", "deliver to Remera, KG 11 Ave", "yes",
+              "I paid, transaction id TXB-0001"):
+        b.send(t, from_number=B_CUSTOMER)
     orders = b.get("/api/orders").json()
     assert len(orders) == 1
     return orders[0]
@@ -62,7 +63,8 @@ def _snapshot(t) -> dict:
     snap = {p: t.get(p).json() for p in (
         "/api/business", "/api/business/agent-config", "/api/business/settings", "/api/delivery-zones",
         "/api/whatsapp/accounts", "/api/products", "/api/categories", "/api/orders", "/api/customers",
-        "/api/conversations", "/api/knowledge", "/api/dashboard/stats", "/api/dashboard/usage")}
+        "/api/conversations", "/api/knowledge", "/api/dashboard/stats", "/api/dashboard/usage",
+        "/api/dashboard/notifications", "/api/dashboard/audit")}
     snap["orders_detail"] = [t.get(f"/api/orders/{o['id']}").json() for o in snap["/api/orders"]]
     snap["conversations_detail"] = [t.get(f"/api/conversations/{c['id']}").json() for c in snap["/api/conversations"]]
     snap["inventory"] = [t.get(f"/api/products/{p['id']}/inventory").json() for p in snap["/api/products"]]
@@ -77,7 +79,9 @@ IDOR_MATRIX = [
     ("POST", "/api/products/{product_id}/stock", {"change": 5}),
     ("GET", "/api/products/{product_id}/inventory", None),
     ("GET", "/api/orders/{order_id}", None),
-    ("PATCH", "/api/orders/{order_id}", {"status": "cancelled"}),
+    ("PATCH", "/api/orders/{order_id}", {"status": "cancelled", "reason": "hijack"}),
+    ("POST", "/api/orders/{order_id}/payments", {"method": "cash", "note": "fake payment from A"}),
+    ("POST", "/api/payments/{payment_id}/void", {"reason": "hijack"}),
     ("POST", "/api/payments/{payment_id}/refresh", None),
     ("POST", "/api/payments/{payment_id}/simulate", {"status": "successful"}),
     ("GET", "/api/customers/{customer_id}", None),
@@ -124,8 +128,10 @@ def test_lists_searches_and_aggregates_only_show_own_rows(fashion, electronics, 
     _seed_b_data(b)
     b_snap = _snapshot(b)
     a_snap = _snapshot(a)
-    for path in ("/api/orders", "/api/customers", "/api/conversations", "/api/knowledge"):
+    for path in ("/api/orders", "/api/customers", "/api/conversations", "/api/knowledge",
+                 "/api/dashboard/notifications", "/api/dashboard/audit"):
         assert a_snap[path] == [], path
+    assert b_snap["/api/dashboard/notifications"] and b_snap["/api/dashboard/audit"]
     for path in ("/api/products", "/api/categories", "/api/delivery-zones", "/api/whatsapp/accounts"):
         assert not {x["id"] for x in a_snap[path]} & {x["id"] for x in b_snap[path]}, path
     stats, usage = a_snap["/api/dashboard/stats"], a_snap["/api/dashboard/usage"]
@@ -133,7 +139,7 @@ def test_lists_searches_and_aggregates_only_show_own_rows(fashion, electronics, 
     assert stats["revenue"] == 0 and stats["recent_orders"] == []
     assert usage["agent_runs"] == usage["messages_in"] == usage["messages_out"] == 0
     b_usage = b_snap["/api/dashboard/usage"]
-    assert b_usage["agent_runs"] >= 4 and b_usage["messages_in"] == 4
+    assert b_usage["agent_runs"] >= 5 and b_usage["messages_in"] == 5
 
     b_names = {p["name"] for p in b_snap["/api/products"]}
     assert a.get("/api/knowledge/search", params={"q": "warranty code ZEBRA"}).json() == []
@@ -236,6 +242,7 @@ def test_agent_tools_cannot_reach_other_tenant(fashion, electronics, db, outbox)
         ("get_order", {"order_number": b_order["order_number"]}),
         ("check_order_status", {"order_number": b_order["order_number"]}),
         ("initiate_payment", {"order_number": b_order["order_number"]}),
+        ("submit_payment_reference", {"order_number": b_order["order_number"], "reference": "TX-FROM-A"}),
     ]:
         result, _ = execute_tool(ctx, name, args)
         assert result["ok"] is False, (name, result)
@@ -418,7 +425,7 @@ def test_concurrent_traffic_across_tenants_stays_isolated(fashion, electronics, 
 
     def shop(pnid, number, query):
         try:
-            for t in (query, "add 1", "place the order to Kigali"):
+            for t in (query, "add 1", "deliver to Remera, KG 11 Ave", "yes"):
                 payload = build_text_webhook(pnid, "+250700", number, t, f"wamid.{uuid.uuid4().hex}")
                 assert [r.status for r in process_webhook_payload(payload, SessionLocal)] == ["replied"]
         except BaseException as exc:  # surfaced below

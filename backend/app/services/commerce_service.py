@@ -1,13 +1,21 @@
-"""Deterministic commerce logic: delivery quotes, carts, totals, orders.
+"""Deterministic commerce logic: delivery quotes, carts, totals, checkout confirmation, orders.
 
-Nothing here trusts prices or totals from the LLM. Every number is read from the DB.
+Nothing here trusts prices or totals from the LLM. Every number is read from the DB. No delivery zone or
+address is ever assumed: an order needs the customer's own address, matched to a configured zone.
+
+Order lifecycle:  cart -> CheckoutService.prepare() (server-rendered summary, fingerprinted)
+                  -> customer replies YES in a later message -> CheckoutService.confirm() -> Order 'pending'
+                  -> owner accepts -> ready / out_for_delivery -> delivered   (or cancelled)
+Payment is tracked separately on Order.payment_status (see PaymentService).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -16,31 +24,32 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationError
-from app.models import Business, Cart, CartItem, Conversation, Customer, DeliveryZone, Order, Product
+from app.models import Business, Cart, CartItem, Conversation, Customer, DeliveryZone, Message, Order, Product
 from app.repositories.repos import (
     CartItemRepo,
     CartRepo,
     DeliveryZoneRepo,
     InventoryRepo,
+    MessageRepo,
     OrderRepo,
     ProductRepo,
     SettingsRepo,
 )
 
 ZERO = Decimal("0")
+CHECKOUT_TTL = timedelta(minutes=30)
+# A YES only counts if the customer could actually have seen the summary.
+DELIVERED_STATUSES = ("sent", "delivered", "read", "simulated")
 
 ORDER_TRANSITIONS: dict[str, set[str]] = {
-    "pending": {"awaiting_payment", "processing", "cancelled"},
-    "awaiting_payment": {"paid", "cancelled"},
-    "paid": {"processing", "ready", "out_for_delivery"},
-    "processing": {"ready", "out_for_delivery", "cancelled"},
-    "ready": {"out_for_delivery", "delivered"},
+    "pending": {"accepted", "cancelled"},            # waiting for the owner's review
+    "accepted": {"ready", "out_for_delivery", "delivered", "cancelled"},
+    "ready": {"out_for_delivery", "delivered", "cancelled"},
     "out_for_delivery": {"delivered"},
     "delivered": set(),
     "cancelled": set(),
 }
-# 'paid' can only be set by a provider-confirmed payment, never by an admin or the agent.
-ADMIN_FORBIDDEN_TARGETS = {"paid", "awaiting_payment"}
+OPEN_STATUSES = ("pending", "accepted", "ready", "out_for_delivery")
 
 
 def money(v: Decimal | float | int) -> str:
@@ -65,33 +74,32 @@ class DeliveryService:
         self.business_id = business_id
         self.zones = DeliveryZoneRepo(db, business_id)
 
-    def match_zone(self, location: str | None) -> tuple[DeliveryZone | None, bool]:
-        active = self.zones.list(where=[DeliveryZone.active.is_(True)])
-        if location:
-            loc = f" {re.sub(r'[^a-z0-9]+', ' ', location.lower())} "
-            best: tuple[int, DeliveryZone] | None = None
-            for z in active:
-                for term in [z.name, *z.areas]:
-                    t = re.sub(r"[^a-z0-9]+", " ", term.lower()).strip()
-                    if t and f" {t} " in loc and (best is None or len(t) > best[0]):
-                        best = (len(t), z)
-            if best:
-                return best[1], True
-        default = next((z for z in active if z.is_default), None)
-        return default, False
+    def match_zone(self, location: str | None) -> DeliveryZone | None:
+        """The zone whose name or area appears in the location text (longest match). Never a default."""
+        if not location:
+            return None
+        loc = f" {re.sub(r'[^a-z0-9]+', ' ', location.lower())} "
+        best: tuple[int, DeliveryZone] | None = None
+        for z in self.zones.list(where=[DeliveryZone.active.is_(True)]):
+            for term in [z.name, *z.areas]:
+                t = re.sub(r"[^a-z0-9]+", " ", term.lower()).strip()
+                if t and f" {t} " in loc and (best is None or len(t) > best[0]):
+                    best = (len(t), z)
+        return best[1] if best else None
 
     def quote(self, location: str | None) -> DeliveryQuote:
         business = self.db.get(Business, self.business_id)
         if not business.delivery_enabled:
             return DeliveryQuote(available=False, message="Delivery is not offered; orders are for pickup.")
-        zone, matched = self.match_zone(location)
-        if location and not matched:
-            return DeliveryQuote(available=False, message=f"No delivery zone covers '{location}'. "
-                                 f"Available zones: {', '.join(z.name for z in self.zones.list()) or 'none'}.")
-        if zone is None:
+        if not location:
             return DeliveryQuote(available=False, message="Please share your delivery location to calculate the fee.")
+        zone = self.match_zone(location)
+        if zone is None:
+            names = ", ".join(z.name for z in self.zones.list(where=[DeliveryZone.active.is_(True)])) or "none"
+            return DeliveryQuote(available=False,
+                                 message=f"No delivery zone covers '{location}'. Available zones: {names}.")
         return DeliveryQuote(available=True, zone_id=str(zone.id), zone_name=zone.name, fee=zone.fee,
-                             estimated_time=zone.estimated_time, matched_location=matched)
+                             estimated_time=zone.estimated_time, matched_location=True)
 
 
 # ---------------------------------------------------------------- cart
@@ -118,6 +126,8 @@ class CartTotals:
     total: Decimal = ZERO
     delivery_zone: str | None = None
     delivery_note: str | None = None
+    # True when delivery applies but no zone is known yet: `total` then EXCLUDES delivery.
+    delivery_pending: bool = False
     issues: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -199,12 +209,6 @@ class CartService:
         self.db.flush()
         self.db.refresh(cart)
 
-    def set_delivery(self, cart: Cart, zone: DeliveryZone | None, address: str | None = None) -> None:
-        cart.delivery_zone_id = zone.id if zone else None
-        if address:
-            cart.delivery_address = address[:300]
-        self.db.flush()
-
     def totals(self, cart: Cart, *, delivery_location: str | None = None) -> CartTotals:
         business = self._business()
         t = CartTotals(cart_id=str(cart.id), currency=business.currency)
@@ -227,20 +231,133 @@ class CartService:
                 q = delivery.quote(delivery_location)
                 if q.available:
                     zone = delivery.zones.get(q.zone_id)
-                    self.set_delivery(cart, zone, delivery_location)
+                    cart.delivery_zone_id = zone.id  # remembered for the quote; the address comes at checkout
+                    self.db.flush()
                 else:
                     t.delivery_note = q.message
             elif cart.delivery_zone_id:
                 zone = delivery.zones.get(cart.delivery_zone_id)
-            else:
-                zone, _ = delivery.match_zone(None)
-                if zone:
-                    t.delivery_note = f"Assuming default delivery zone '{zone.name}'. Share your location for an exact fee."
             if zone:
                 t.delivery_fee = zone.fee
                 t.delivery_zone = zone.name
+            else:
+                t.delivery_pending = True
+                t.delivery_note = t.delivery_note or ("Delivery fee depends on your area. "
+                                                      "Share your delivery location for the exact total.")
         t.total = t.subtotal + t.delivery_fee - t.discount
         return t
+
+
+# ---------------------------------------------------------------- checkout (explicit confirmation)
+class CheckoutChanged(ValidationError):
+    code = "checkout_changed"
+
+
+@dataclass
+class CheckoutSummary:
+    cart_id: uuid.UUID
+    text: str
+    totals: CartTotals
+    delivery_address: str | None
+
+
+def _fingerprint(totals: CartTotals, cart: Cart) -> str:
+    data = [[(line.product_id, line.quantity, str(line.unit_price)) for line in totals.lines],
+            str(totals.delivery_fee), str(cart.delivery_zone_id), cart.delivery_address, str(totals.total)]
+    return hashlib.sha256(json.dumps(data).encode()).hexdigest()
+
+
+def render_summary(totals: CartTotals, delivery_address: str | None) -> str:
+    cur = totals.currency
+    lines = ["🧾 Order summary — please check:"]
+    for i, line in enumerate(totals.lines, 1):
+        lines.append(f"{i}. {line.name} x{line.quantity} @ {cur} {money(line.unit_price)} = {cur} {money(line.line_total)}")
+    lines.append(f"Subtotal: {cur} {money(totals.subtotal)}")
+    if totals.delivery_zone:
+        lines.append(f"Delivery ({totals.delivery_zone}): {cur} {money(totals.delivery_fee)}")
+    if totals.discount:
+        lines.append(f"Discount: -{cur} {money(totals.discount)}")
+    lines.append(f"Total: {cur} {money(totals.total)}")
+    lines.append(f"Deliver to: {delivery_address}" if delivery_address else "Pickup at the shop")
+    lines.append("Reply YES to confirm this order, or tell me what to change.")
+    return "\n".join(lines)
+
+
+class CheckoutService:
+    """The only way an order is created from a conversation. The agent can *prepare* a checkout; the order is
+    placed only when a later customer message explicitly confirms the delivered, unchanged summary."""
+
+    def __init__(self, db: Session, business_id: uuid.UUID):
+        self.db = db
+        self.business_id = business_id
+        self.carts = CartService(db, business_id)
+
+    def prepare(self, customer: Customer, conv: Conversation, *, delivery_address: str | None = None,
+                notes: str | None = None) -> CheckoutSummary:
+        business = self.db.get(Business, self.business_id)
+        cart = self.carts.get_active(customer, conv, create=False)
+        if cart is None or not cart.items:
+            raise ValidationError("The cart is empty. Add products before checking out.")
+        if business.delivery_enabled:
+            address = (delivery_address or "").strip() or (cart.delivery_address or "")
+            if len(address) < 3:
+                raise ValidationError("Please share your delivery address (area and street or a landmark) "
+                                      "so I can prepare your order.", code="address_required")
+            quote = DeliveryService(self.db, self.business_id).quote(address)
+            if not quote.available:
+                raise ValidationError(quote.message)
+            cart.delivery_zone_id = uuid.UUID(quote.zone_id)
+            cart.delivery_address = address[:300]
+        else:
+            cart.delivery_zone_id, cart.delivery_address = None, None
+        self.db.flush()
+        totals = self.carts.totals(cart)
+        if totals.issues:
+            raise ValidationError("; ".join(totals.issues))
+        now = datetime.now(timezone.utc)
+        cart.checkout = {"fingerprint": _fingerprint(totals, cart), "prepared_at": now.isoformat(),
+                         "expires_at": (now + CHECKOUT_TTL).isoformat(), "notes": notes, "summary_message_id": None}
+        self.db.flush()
+        return CheckoutSummary(cart.id, render_summary(totals, cart.delivery_address), totals, cart.delivery_address)
+
+    def attach_summary_message(self, cart_id: uuid.UUID, message_id: uuid.UUID) -> None:
+        cart = self.carts.carts.get(cart_id)
+        if cart is not None and cart.checkout:
+            cart.checkout = {**cart.checkout, "summary_message_id": str(message_id)}
+
+    def pending(self, customer: Customer) -> Cart | None:
+        cart = self.carts.get_active(customer, create=False)
+        return cart if cart is not None and cart.checkout else None
+
+    def cancel(self, customer: Customer) -> bool:
+        cart = self.pending(customer)
+        if cart is None:
+            return False
+        cart.checkout = None
+        return True
+
+    def confirm(self, customer: Customer, conv: Conversation, confirmation: Message) -> Order:
+        cart = self.pending(customer)
+        if cart is None:
+            raise ValidationError("There is no order summary waiting for confirmation.", code="no_checkout")
+        checkout = cart.checkout
+        if datetime.fromisoformat(checkout["expires_at"]) < datetime.now(timezone.utc):
+            cart.checkout = None
+            raise CheckoutChanged("That order summary has expired.")
+        summary = MessageRepo(self.db, self.business_id).get(checkout["summary_message_id"]) \
+            if checkout.get("summary_message_id") else None
+        if summary is None or summary.delivery_status not in DELIVERED_STATUSES \
+                or summary.created_at >= confirmation.created_at:
+            raise ValidationError("The order summary was not delivered yet.", code="summary_not_delivered")
+        totals = self.carts.totals(cart)
+        if totals.issues or _fingerprint(totals, cart) != checkout["fingerprint"]:
+            cart.checkout = None
+            raise CheckoutChanged("The cart, prices, stock or delivery changed since the summary.")
+        order = OrderService(self.db, self.business_id).create_from_cart(customer, conv, notes=checkout.get("notes"))
+        order.confirmation_message_id = confirmation.id
+        order.confirmed_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return order
 
 
 # ---------------------------------------------------------------- orders
@@ -263,24 +380,26 @@ class OrderService:
         return f"{business.order_prefix}-{n:05d}"
 
     def create_from_cart(self, customer: Customer, conversation: Conversation | None, *,
-                         delivery_location: str | None = None, notes: str | None = None) -> Order:
+                         notes: str | None = None) -> Order:
+        """Internal: call through CheckoutService.confirm() for conversational orders. Uses the cart's own
+        delivery zone + address (set at checkout); never assumes one."""
+        from app.models import OrderItem
         business = self.db.get(Business, self.business_id)
         carts = CartService(self.db, self.business_id)
         cart = carts.get_active(customer, conversation, create=False)
         if cart is None or not cart.items:
             raise ValidationError("The cart is empty")
-        totals = carts.totals(cart, delivery_location=delivery_location)
-        if business.delivery_enabled and totals.delivery_zone is None:
-            raise ValidationError(totals.delivery_note or "A delivery location is required before ordering")
+        totals = carts.totals(cart)
+        if business.delivery_enabled and (totals.delivery_zone is None or not cart.delivery_address):
+            raise ValidationError("A delivery address in a delivery zone is required before ordering")
 
         order = self.orders.add(
             order_number=self._next_number(business), customer_id=customer.id,
-            conversation_id=conversation.id if conversation else None, status="pending", currency=business.currency,
-            subtotal=ZERO, delivery_fee=totals.delivery_fee, discount=totals.discount, total=ZERO,
-            delivery_zone_name=totals.delivery_zone, delivery_address=cart.delivery_address, notes=notes,
+            conversation_id=conversation.id if conversation else None, status="pending", payment_status="unpaid",
+            currency=business.currency, subtotal=ZERO, delivery_fee=totals.delivery_fee, discount=totals.discount,
+            total=ZERO, delivery_zone_name=totals.delivery_zone, delivery_address=cart.delivery_address, notes=notes,
         )
         subtotal = ZERO
-        from app.models import OrderItem
         # Lock product rows in a stable order to avoid deadlocks, then validate + decrement stock.
         product_ids = sorted(i.product_id for i in cart.items)
         locked = {p.id: p for p in self.db.scalars(
@@ -302,6 +421,7 @@ class OrderService:
         order.subtotal = subtotal
         order.total = subtotal + order.delivery_fee - order.discount
         cart.status = "converted"
+        cart.checkout = None
         self.db.flush()
         self.db.refresh(order)
         return order
@@ -323,8 +443,8 @@ class OrderService:
                                 limit=limit)
 
     def latest_unpaid(self, customer: Customer) -> Order | None:
-        rows = self.orders.list(where=[Order.customer_id == customer.id,
-                                       Order.status.in_(("pending", "awaiting_payment"))],
+        rows = self.orders.list(where=[Order.customer_id == customer.id, Order.status.in_(OPEN_STATUSES),
+                                       Order.payment_status != "paid"],
                                 order_by=[Order.created_at.desc()], limit=1)
         return rows[0] if rows else None
 
@@ -332,18 +452,18 @@ class OrderService:
         where = [Order.status == status] if status else []
         return self.orders.list(where=where, order_by=[Order.created_at.desc()], limit=limit)
 
-    def transition(self, order: Order, new_status: str, *, actor: str = "system") -> Order:
+    def transition(self, order: Order, new_status: str, *, reason: str | None = None) -> Order:
         if new_status not in ORDER_TRANSITIONS:
             raise ValidationError(f"Unknown status '{new_status}'")
-        if actor == "admin" and new_status in ADMIN_FORBIDDEN_TARGETS:
-            raise ValidationError("'paid' can only be set by a confirmed payment")
         if new_status not in ORDER_TRANSITIONS[order.status]:
             raise ValidationError(f"Cannot change order from {order.status} to {new_status}")
+        now = datetime.now(timezone.utc)
         if new_status == "cancelled":
             self._restock(order)
+            order.cancelled_at, order.cancel_reason = now, (reason or None)
+        elif new_status == "accepted":
+            order.accepted_at = now
         order.status = new_status
-        if new_status == "paid":
-            order.paid_at = datetime.now(timezone.utc)
         self.db.flush()
         return order
 
@@ -358,5 +478,5 @@ class OrderService:
 
     def revenue(self) -> Decimal:
         stmt = self.orders.select(func.coalesce(func.sum(Order.total), 0)).where(
-            Order.status.in_(("paid", "processing", "ready", "out_for_delivery", "delivered")))
+            Order.payment_status == "paid", Order.status != "cancelled")
         return Decimal(self.db.scalar(stmt) or 0)

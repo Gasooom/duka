@@ -24,7 +24,8 @@ provider. No chatbot code is written per business. `Kigali Fashion` and `Mama's 
           tenant-scoped repositories ─► PostgreSQL + pgvector (one shared DB)
                                   │
   reply queued in the same transaction (outbox) ─► sent after commit ─► WhatsApp adapter (cloud | dev)
-  PaymentProvider (mock | MTN MoMo) ─► callback ─► re-verify ─► order=paid ─► WhatsApp confirmation
+  checkout: summary ─► customer's explicit YES ─► order (pending review) ─► owner alerted ─► owner accepts
+  payment: manual (owner records MoMo ref / cash, audited) | provider (MoMo / mock) callback ─► re-verify ─► paid
 ```
 
 It's a modular monolith: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL 16 + pgvector, and a Next.js 15 dashboard.
@@ -44,9 +45,10 @@ make seed                       # Demo Store, Kigali Fashion, Mama's Electronics
 - Dashboard: http://localhost:3000. Log in as `fashion@duka.dev`, `electronics@duka.dev` or `demo@duka.dev`. The password is `password123`.
 - API docs (OpenAPI): http://localhost:8000/docs
 - To try it: open **WhatsApp → Customer simulator** and type
-  `Hi, I'm looking for black sneakers under 100,000 RWF.` → `Add the second one.` → `How much including delivery?`
-  → `Place the order.` → `Pay.` Then go to **Orders → Simulate success**. The order becomes *paid* and the
-  customer gets a confirmation. Click **Debug** to see every tool call.
+  `Hi, I'm looking for black sneakers under 100,000 RWF.` → `Add the second one.` → `Place the order.` (it asks for
+  your address) → `Deliver to Remera, KG 11 Ave` (exact summary) → `yes` (order placed, owner alerted). Then in
+  **Orders**: *Accept order* (customer gets the payment instructions), reply `I paid, transaction id MP123` in the
+  simulator, and *Confirm payment received*. Click **Debug** in the conversation to see every step.
 - Or from a terminal: `make demo`
 
 ## Local without Docker
@@ -62,7 +64,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 96 tests. They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 162 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -71,8 +73,9 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_tenant_isolation.py` (**mandatory**) | Business A can't read, modify or infer B's data through any id-bearing API route (the matrix fails if a new route isn't covered), lists/search/stats/usage, the agent tools, customer chat, webhooks, the repositories or forged/stale JWTs. The database itself rejects cross-tenant references and `business_id` changes (the test fails if a new tenant FK isn't guarded). Concurrent checkouts in two stores stay isolated. |
 | `test_e2e.py` | The section-37 demo, automated: signed webhook → search → "add the second one" → exact total incl. delivery → order → pay → signed provider callback → paid → WhatsApp confirmation. Store 2 then runs on the same engine with a completely different catalog. |
 | `test_products.py` | CRUD, CSV validation (row/column errors, all-or-nothing by default, SKU upsert), search precision + price filter, inventory ledger |
-| `test_commerce.py` | Cart math, delivery zones, stock checks, order price snapshot, restock on cancel, state machine, admin can't set `paid` |
-| `test_payments.py` | No auto-confirmation, idempotent initiate + callbacks, HMAC callbacks, failures/retry, MoMo protocol, MoMo callbacks re-verified against the API |
+| `test_commerce.py` | Cart math, no assumed zone, checkout needs a real address, confirmation needs a delivered + unchanged + fresh summary, snapshots, stock races, state machine |
+| `test_orders_handoff.py` | Strict multilingual YES/NO, one order per confirmation, misbehaving LLM can't place orders or alter the summary, owner alerts (+ template), review/reject, handoff in EN/RW/FR/SW without false positives, takeover pauses the AI, explicit return |
+| `test_payments.py` | Manual payments (evidence, owner-only, reference reuse blocked, void, audit append-only), customer-reported refs stay pending, the agent can never mark paid, mock refused in production, provider callbacks, MoMo re-verification |
 | `test_whatsapp.py` | Verify handshake, signature check, duplicate delivery, unknown tenant, non-text, handoff stops the AI, encrypted tokens, Cloud adapter retries, message ordering |
 | `test_agent.py` | OpenAI-compatible tool loop, token/latency capture, invalid/unknown tool calls contained, iteration cap, LLM outage → fallback, greeting fast path, bounded context, summaries |
 | `test_durability.py` | Persist-before-ack, crash recovery (lease), redeliveries have one effect, rollback means no reply, retries/dead-letter, per-customer ordering, outbox retry/failure, background threads |
@@ -86,7 +89,9 @@ on every run, which also proves the migrations work on a clean database. Externa
    is always closed when `APP_ENV=production`** (and can be closed elsewhere with `ALLOW_PUBLIC_REGISTRATION=false`).
 2. **Business & AI** sets the profile, hours, currency, tone, greeting, business rules and toggles (delivery / payment / human handoff).
 3. **Products** takes a CSV upload (`name,description,price,category,sku,stock_quantity`). Errors are reported per row and column.
-4. **Settings** holds delivery zones (fee + areas matched against the customer's location) and the payment provider.
+4. **Settings** holds delivery zones (fee + the area names matched against the customer's address — list them
+   well, an address naming no area is refused), how customers pay (manual by default, with the exact payment
+   instructions the assistant shares) and the owner's WhatsApp number for new-order / handoff alerts.
 5. **Knowledge** takes FAQs and policies as text, PDF, TXT or MD. They're chunked and embedded into pgvector.
 6. **WhatsApp** connects the Cloud API `phone_number_id` + access token. The token is Fernet-encrypted at rest.
 
@@ -117,9 +122,16 @@ Everything below works in dev mode without credentials. The real integrations ar
   shown, cart, unpaid order), a rolling summary that's only built for long chats, and the last 8 messages (truncated).
   Tool results are only kept for the current turn. "Add the second one" works because the last product list is
   stored in `conversations.state`, so the full history doesn't have to be re-sent.
-- **Payments are confirmed by the provider only.** The mock provider never auto-confirms; it needs an HMAC-signed
-  callback. MoMo callbacks aren't signed, so they're treated as a hint and the status is always re-queried from the
-  MoMo API. Admins and the agent can't set `paid`.
+- **Orders need an explicit YES.** The model can only prepare a checkout; the server sends the exact summary
+  (items, prices, delivery fee, total, address) and places the order only when the customer's next message
+  confirms it — and only if nothing changed meanwhile. No delivery zone or address is ever assumed.
+- **Payments are confirmed by the provider or by the owner, never by the AI.** Manual payments (the default) are
+  recorded by the owner with evidence and audited; a customer's "I paid, ref X" is stored as pending for the owner
+  to check. The mock provider never auto-confirms and is refused in production. MoMo callbacks are re-verified
+  against the MoMo API.
+- **The owner stays in control.** New orders wait for the owner's review; the owner is alerted on WhatsApp; a
+  customer can ask for a person in English, Kinyarwanda, French or Swahili; voice notes go to a person; a takeover
+  pauses the AI until the owner explicitly returns the conversation to it.
 - **Reliability.** A webhook is acknowledged only after its messages are committed to `webhook_events`; a crash
   after that loses nothing (the worker lease expires and another worker takes over). Each message is processed in
   one transaction together with its reply, which is sent only after commit (outbox), so a customer never hears
@@ -139,12 +151,13 @@ GET|POST /api/delivery-zones   PATCH|DELETE /api/delivery-zones/{id}
 GET|POST /api/whatsapp/accounts   DELETE /api/whatsapp/accounts/{id}
 GET|POST /api/products   GET|PATCH|DELETE /api/products/{id}   POST /api/products/import (multipart CSV)
 POST /api/products/{id}/stock   GET /api/products/{id}/inventory   GET /api/products/search   GET /api/categories
-GET /api/orders[?status=]   GET|PATCH /api/orders/{id}   POST /api/payments/{id}/refresh   POST /api/payments/{id}/simulate (dev)
+GET /api/orders[?status=]   GET|PATCH /api/orders/{id}   POST /api/orders/{id}/payments (owner, manual)
+POST /api/payments/{id}/void (owner)   POST /api/payments/{id}/refresh   POST /api/payments/{id}/simulate (dev)
 GET /api/customers   GET /api/customers/{id}
 GET /api/conversations[?needs_attention=]   GET /api/conversations/{id} (messages + agent runs)
 POST /api/conversations/{id}/reply | /handoff | /return-to-ai
 GET|POST /api/knowledge   POST /api/knowledge/upload   GET /api/knowledge/search   DELETE /api/knowledge/{id}
-GET /api/dashboard/stats | /api/dashboard/usage      POST /api/dev/simulate (dev)
+GET /api/dashboard/stats | usage | notifications | audit      POST /api/dev/simulate (dev)
 GET|POST /webhooks/whatsapp   POST /webhooks/payments/mock   PUT|POST /webhooks/payments/momo/{payment_id}
 GET /health
 ```

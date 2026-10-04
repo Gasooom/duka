@@ -94,7 +94,11 @@ export default function ConversationDebugger({ params }: { params: Promise<{ id:
           <button className="btn-ghost" onClick={reload}>Refresh</button>
           {c.status === "ai"
             ? <button className="btn-ghost" onClick={() => act(() => api(`/conversations/${id}/handoff`, { method: "POST" }))}>Take over</button>
-            : <button className="btn-primary" onClick={() => act(() => api(`/conversations/${id}/return-to-ai`, { method: "POST" }))}>Return to AI</button>}
+            : <button className="btn-primary" onClick={() => {
+                const note = prompt("Optional message to the customer before the assistant takes over again (leave empty for none):", "");
+                if (note === null) return;
+                act(() => api(`/conversations/${id}/return-to-ai`, { body: { message: note || null } }));
+              }}>Return to AI</button>}
         </div>
       </div>
       <ErrorNote error={err} />

@@ -100,12 +100,20 @@ class AgentConfigPatch(BaseModel):
 
 class SettingsOut(ORM):
     payment_provider: str
+    payment_instructions: str | None
+    owner_notification_phone: str | None
+    owner_notification_template: str | None
+    owner_notification_template_language: str
     low_stock_threshold: int
     max_order_quantity: int
 
 
 class SettingsPatch(BaseModel):
-    payment_provider: str | None = Field(None, pattern=r"^(mock|momo)$")
+    payment_provider: str | None = Field(None, pattern=r"^(manual|mock|momo)$")
+    payment_instructions: str | None = Field(None, max_length=1000)
+    owner_notification_phone: str | None = Field(None, max_length=32)
+    owner_notification_template: str | None = Field(None, max_length=100, pattern=r"^[a-z0-9_]*$")
+    owner_notification_template_language: str | None = Field(None, max_length=10)
     low_stock_threshold: int | None = Field(None, ge=0, le=10000)
     max_order_quantity: int | None = Field(None, ge=1, le=1000)
 
@@ -281,6 +289,11 @@ class PaymentOut(ORM):
     failure_reason: str | None
     created_at: datetime
     confirmed_at: datetime | None
+    method: str | None
+    external_reference: str | None
+    confirmation_source: str | None  # provider | owner
+    confirmed_by_user_id: uuid.UUID | None
+    note: str | None
 
     @field_serializer("amount")
     def _n(self, v: Decimal) -> float:
@@ -302,7 +315,13 @@ class OrderOut(ORM):
     delivery_address: str | None
     notes: str | None
     created_at: datetime
+    payment_status: str
     paid_at: datetime | None
+    confirmed_at: datetime | None
+    confirmation_message_id: uuid.UUID | None
+    accepted_at: datetime | None
+    cancelled_at: datetime | None
+    cancel_reason: str | None
     items: list[OrderItemOut] = []
 
     @field_serializer("subtotal", "delivery_fee", "discount", "total")
@@ -312,6 +331,44 @@ class OrderOut(ORM):
 
 class OrderStatusIn(BaseModel):
     status: str
+    reason: str | None = Field(None, max_length=500)
+
+
+class ManualPaymentIn(BaseModel):
+    method: str = Field(..., pattern=r"^(momo|cash|bank|other)$")
+    reference: str | None = Field(None, max_length=128)
+    note: str | None = Field(None, max_length=500)
+
+
+class VoidPaymentIn(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class ReturnToAiIn(BaseModel):
+    message: str | None = Field(None, max_length=4000)
+
+
+class AuditEventOut(ORM):
+    id: uuid.UUID
+    actor_type: str
+    actor_user_id: uuid.UUID | None
+    action: str
+    entity_type: str
+    entity_id: uuid.UUID | None
+    data: dict[str, Any]
+    created_at: datetime
+
+
+class NotificationOut(ORM):
+    id: uuid.UUID
+    kind: str
+    recipient: str | None
+    body: str
+    entity_type: str | None
+    entity_id: uuid.UUID | None
+    status: str
+    error: str | None
+    created_at: datetime
 
 
 class SimulatePaymentIn(BaseModel):

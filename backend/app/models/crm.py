@@ -136,3 +136,42 @@ class WebhookEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     result: Mapped[str | None] = mapped_column(String(20))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuditEvent(IdMixin, TenantMixin, Base):
+    """Append-only record of sensitive actions (manual payments, order decisions, takeovers).
+    UPDATE is rejected by a database trigger."""
+
+    __tablename__ = "audit_events"
+
+    actor_type: Mapped[str] = mapped_column(String(10), nullable=False)  # user | customer | agent | system
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True),
+                                                            ForeignKey("users.id", ondelete="SET NULL"))
+    action: Mapped[str] = mapped_column(String(60), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(),
+                                                 nullable=False)
+
+
+class Notification(IdMixin, TimestampMixin, TenantMixin, Base):
+    """Owner notifications (new order, handoff, reported payment), delivered through the same outbox
+    discipline as customer messages. status: queued | sending | sent | simulated | retry | failed | skipped."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_outbox", "next_send_at",
+                            postgresql_where=text("status IN ('queued', 'retry')")),)
+
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    recipient: Mapped[str | None] = mapped_column(String(32))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str | None] = mapped_column(String(30))
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    status: Mapped[str] = mapped_column(String(12), default="queued", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    send_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    wa_message_id: Mapped[str | None] = mapped_column(String(128))
+    error: Mapped[str | None] = mapped_column(Text)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -13,12 +13,15 @@ from app.tools.registry import TOOLS, tools_for
 
 REQUIRED_TOOLS = {"search_products", "get_product", "check_inventory", "get_business_information",
                   "search_knowledge", "create_cart", "get_cart", "add_to_cart", "remove_from_cart", "clear_cart",
-                  "calculate_cart_total", "create_order", "get_order", "get_customer_orders", "check_order_status",
-                  "calculate_delivery", "initiate_payment", "handoff_to_human"}
+                  "calculate_cart_total", "prepare_checkout", "get_order", "get_customer_orders",
+                  "check_order_status", "calculate_delivery", "initiate_payment", "submit_payment_reference",
+                  "handoff_to_human"}
 
 
 def test_all_required_tools_registered_with_schemas():
     assert REQUIRED_TOOLS <= set(TOOLS)
+    # The model cannot place orders or confirm payments: no such tool exists.
+    assert not {"create_order", "confirm_order", "place_order", "mark_paid", "record_payment"} & set(TOOLS)
     for t in TOOLS.values():
         s = t.schema()
         assert s["function"]["name"] == t.name and s["function"]["parameters"]["type"] == "object"

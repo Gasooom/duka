@@ -16,10 +16,16 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  pending: "bg-gray-100 text-gray-700",
-  awaiting_payment: "bg-amber-50 text-amber-800",
+  pending: "bg-amber-50 text-amber-800",
+  accepted: "bg-sky-50 text-sky-800",
+  unpaid: "bg-gray-100 text-gray-700",
   paid: "bg-emerald-50 text-emerald-800",
-  processing: "bg-sky-50 text-sky-800",
+  voided: "bg-gray-100 text-gray-500",
+  queued: "bg-gray-100 text-gray-700",
+  retry: "bg-amber-50 text-amber-800",
+  skipped: "bg-gray-100 text-gray-500",
+  handoff: "bg-amber-50 text-amber-800",
+  order_confirmed: "bg-emerald-50 text-emerald-800",
   ready: "bg-indigo-50 text-indigo-800",
   out_for_delivery: "bg-violet-50 text-violet-800",
   delivered: "bg-emerald-100 text-emerald-900",

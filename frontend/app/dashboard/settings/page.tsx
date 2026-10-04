@@ -20,6 +20,8 @@ export default function SettingsPage() {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, any>;
     act(() => api("/business/settings", { method: "PATCH", body: { payment_provider: f.payment_provider,
+      payment_instructions: f.payment_instructions, owner_notification_phone: f.owner_notification_phone,
+      owner_notification_template: f.owner_notification_template,
       low_stock_threshold: Number(f.low_stock_threshold), max_order_quantity: Number(f.max_order_quantity) } }), "Settings saved.");
   }
   function saveZone(e: FormEvent<HTMLFormElement>) {
@@ -41,13 +43,27 @@ export default function SettingsPage() {
       <OkNote text={msg} />
       {s && (
         <form onSubmit={saveSettings} className="card mb-6 grid gap-3 p-4 md:grid-cols-3">
-          <h2 className="text-sm font-semibold md:col-span-3">Payments & inventory</h2>
-          <Field label="Payment provider" hint="Mock = dev callbacks; MTN MoMo needs MOMO_* env credentials.">
+          <h2 className="text-sm font-semibold md:col-span-3">Payments, notifications & inventory</h2>
+          <Field label="How customers pay" hint="Manual: customers pay you directly; you record each payment on the order.">
             <select name="payment_provider" defaultValue={s.payment_provider} className="input">
-              <option value="mock">Mock (development)</option>
-              <option value="momo">MTN Mobile Money</option>
+              <option value="manual">Manual (MoMo to my number, cash, bank)</option>
+              <option value="momo">MTN MoMo API (platform credentials required)</option>
+              <option value="mock">Test payments (development only)</option>
             </select>
           </Field>
+          <div className="md:col-span-2">
+            <Field label="Payment instructions sent to customers" hint="e.g. MTN MoMo to 0788 123 456 (Your Shop Ltd). The assistant shares exactly this text.">
+              <textarea name="payment_instructions" defaultValue={s.payment_instructions || ""} rows={2} className="input" />
+            </Field>
+          </div>
+          <Field label="Your WhatsApp for alerts" hint="New orders, handoffs and reported payments are sent here.">
+            <input name="owner_notification_phone" defaultValue={s.owner_notification_phone || ""} placeholder="2507…" className="input" />
+          </Field>
+          <div className="md:col-span-2">
+            <Field label="Alert template name (optional)" hint="Meta only delivers alerts outside a 24h chat window with an approved template (one body parameter).">
+              <input name="owner_notification_template" defaultValue={s.owner_notification_template || ""} placeholder="new_order_alert" className="input" />
+            </Field>
+          </div>
           <Field label="Low-stock threshold"><input name="low_stock_threshold" type="number" min={0} defaultValue={s.low_stock_threshold} className="input" /></Field>
           <Field label="Max units per product"><input name="max_order_quantity" type="number" min={1} defaultValue={s.max_order_quantity} className="input" /></Field>
           <div className="md:col-span-3"><button className="btn-primary">Save</button></div>

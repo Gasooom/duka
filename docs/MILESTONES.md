@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4 complete).
+Last updated: 2026-10-04 (M2, M4, M5 complete).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -147,35 +147,73 @@ Remaining risks / not in scope:
   they show as `failed` and flag the conversation).
 - Voice/media still get the "text only" reply (M6 routes them to a human).
 
-### M5 — Real commerce · IN PROGRESS
-Done: DB-priced cart, delivery zones, stock check + row locks on checkout, order item price snapshots,
-per-tenant order numbers, restock on cancel, state machine, admin cannot set `paid`, payment idempotency.
+### M5 — Safe orders + human control · COMPLETE
 
-Gaps (live-reproduced where noted):
-- **No explicit confirmation step.** "Place the order." immediately created `KF-00002` (live).
-- **Order created with an assumed delivery zone and no address** ("Assuming default delivery zone") (live).
-- **Mock payment provider is selectable in production and is the default.** The agent told the customer
-  "I've sent a mobile money request" (live) — in production nothing is sent and mock callbacks are disabled,
-  so the order would stay `awaiting_payment` forever.
-- No owner notification of new orders (WhatsApp/email/anything).
-- No owner accept/reject step (`pending → processing` is the closest).
-- No manual payment path (cash / MoMo-to-merchant-number with owner-recorded reference). Note: CLAUDE.md
-  non-negotiable #4 forbids admins setting `paid`; the brief asks for "manual mark paid". Needs a decision.
-- A payment that succeeds after the order was cancelled is not flagged.
-- MoMo credentials are platform-level env vars, not per merchant.
+Order lifecycle (enforced server-side, the LLM cannot bypass it):
+`conversation -> cart -> prepare_checkout (needs a real address in a delivery zone; nothing assumed) ->
+server-rendered summary sent verbatim -> customer's NEXT message is an explicit YES -> order 'pending'
+(confirmation message id stored as evidence) -> owner notified -> owner accepts/rejects -> payment ->
+ready / out_for_delivery / delivered`.
+- The model has **no tool that creates orders or confirms payments** (`create_order` removed; test asserts no
+  such tool exists). `prepare_checkout` only fingerprints the cart and returns the summary.
+- The order is created by a deterministic step before any LLM call, only if: a summary is pending, it was
+  actually delivered (`sent/delivered/read/simulated`) before the YES, it is < 30 min old, and the cart, prices,
+  stock, zone and address are unchanged (fingerprint). Otherwise a fresh summary is sent. The YES classifier is
+  strict and multilingual (EN/RW/FR/SW + 👍); "yes but…" is not a confirmation.
+- No assumed delivery zone anywhere: totals without a location say "Total before delivery".
+- Fulfilment status and **payment status are separate** (`pending -> accepted -> ready -> out_for_delivery ->
+  delivered | cancelled` × `unpaid | pending | paid`) so an owner can accept a cash-on-delivery order and record
+  payment later. Existing rows were migrated.
+- **Manual payments** (default provider for new businesses): the owner records method + evidence (MoMo/bank
+  transaction id required, cash needs a note), stored with `confirmation_source='owner'`, `confirmed_by_user_id`,
+  `confirmed_at`; provider confirmations are `confirmation_source='provider'`. The same reference cannot settle
+  two orders of a store (unique index). Mistakes are voided with a reason, never deleted. Customers can send a
+  transaction id (agent tool) — recorded as *pending* for the owner to verify; it can never mark an order paid.
+  Owner-only API (staff get 403). The mock provider is refused in production; MoMo only when configured.
+- **Audit trail** (`audit_events`, UPDATE rejected by a DB trigger): customer confirmation, every status change
+  (with reason), reported references, manual payments, voids, takeovers, returns to AI, money received for a
+  cancelled order.
+- **Owner notifications** (`notifications`, same outbox discipline): new order, handoff, reported payment, sent
+  to the configured owner WhatsApp number (optional approved template for outside the 24 h window); recorded as
+  `skipped` when no number is set. Listed at `GET /api/dashboard/notifications`.
+- Customer is told on WhatsApp when the owner accepts (with the shop's payment instructions), rejects (with the
+  reason; refund note if paid), dispatches and delivers.
+
+Human control:
+- "Talk to a person" is detected deterministically before the LLM in English, Kinyarwanda, French and Swahili
+  (request phrasing, not nouns: "human hair wigs" stays a product search) -> handoff + owner alert.
+- Voice notes, photos, videos, documents, locations go to a person (no speech-to-text/vision is faked);
+  reactions are ignored.
+- Owner takeover pauses the AI completely (no agent run at all); customer messages stay visible and flagged;
+  staff replies go through the outbox. **Only an explicit "return to AI" resumes the assistant** (optional
+  message to the customer). A handoff discards any pending summary so the customer re-confirms afterwards.
+
+Evidence:
+- `tests/test_orders_handoff.py` (52 cases incl. parametrized), `tests/test_commerce.py`, `tests/test_payments.py`,
+  `tests/test_e2e.py` (full journey: no assumed zone -> address -> summary -> YES -> owner alert -> accept with
+  payment instructions -> customer-reported reference -> owner records it -> dispatched -> delivered).
+  Misbehaving-LLM test: the model calls a non-existent `create_order`, then claims "placed and paid, total RWF 1"
+  -> the customer receives the server summary, no order exists; the later YES places it without an LLM call.
+- `pytest -q` -> 162 passed; ruff clean; migration 0005 down/up/check clean.
+- **Live on the Docker stack** (simulator, rules provider): "Place the order." -> asks for the address;
+  address -> exact summary; "yes" -> `KF-00003` pending/unpaid with confirmation evidence; owner notification
+  delivered (dev adapter); owner accepts; customer reports `MPLIVE…` -> payment pending; owner records it ->
+  paid, `confirmation_source=owner`, 4 audit events; "Nshaka kuvugana n'umuntu" -> human mode; next message ->
+  AI silent; staff reply sent; return to AI -> assistant answers again.
+
+Remaining risks:
+- The summary and status messages are English-only (the YES classifier is multilingual). Localised templates
+  are part of the AI-quality work (M3/M10).
+- Delivery zones match on area names in the address text; an address naming no configured area is refused
+  (safe, but the owner must list areas well).
+- Owner alerts outside WhatsApp's 24 h window need an approved Meta template (configurable, not live-tested).
+- Pickup when delivery is enabled is not offered as a customer choice yet.
 
 ### M6 — Human control · IN PROGRESS
-Done: `handoff_to_human` tool, `status=human` stops the AI, owner takeover, owner reply delivered via
-WhatsApp, return-to-AI, `needs_attention` flag.
-
-Gaps:
-- "I want to talk to a person" → product search (live). Kinyarwanda "Nshaka kuvugana n'umuntu" → product search (live).
-- No owner alert on handoff; dashboard has no polling, so nothing appears until a manual refresh.
-- No after-hours behaviour (business hours are stored but unused).
-- Voice notes not routed to a human (see M4).
-- AI resumes only when an owner clicks "return to AI" — explicit, but there is no timeout/rule and no
-  customer-facing message.
-- No low-confidence handoff signal.
+Done in M5: deterministic multilingual "talk to a person", handoff tool, voice notes/media routed to a person,
+owner alert, takeover pauses the AI, staff replies via the outbox, explicit return-to-AI rule, audit.
+Remaining: after-hours behaviour (business hours are stored but unused), low-confidence handoff, a business-wide
+"AI paused" switch, and dashboard live refresh so handoffs are seen without reloading (M7).
 
 ### M7 — Merchant dashboard · IN PROGRESS
 Present: inbox with takeover/reply/return, conversation debugger, orders list/details/status changes,
@@ -215,10 +253,10 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Real products/prices are used | ✅ from DB (no real merchant catalog yet) |
 | AI does not invent commerce facts | 🟡 tools are DB-backed; model output unchecked |
 | Cart works | ✅ |
-| Explicit order confirmation works | ❌ |
-| Owner receives new-order notification | ❌ |
-| Owner can review/accept orders | ❌ (status changes only) |
-| Human takeover works | 🟡 works from dashboard; detection weak, no alerts |
+| Explicit order confirmation works | ✅ M5 (server-enforced, tested incl. misbehaving LLM) |
+| Owner receives new-order notification | 🟡 M5 (dashboard + WhatsApp outbox; live Meta delivery untested) |
+| Owner can review/accept orders | ✅ M5 |
+| Human takeover works | ✅ M5 (detection EN/RW/FR/SW, alerts, AI pause, explicit return); after-hours pending (M6) |
 | Merchant dashboard works | 🟡 |
 | Production HTTPS works | ❌ |
 | Secrets are protected | 🟡 env-based, encrypted tokens; no prod secret handling |
@@ -226,7 +264,7 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Backups exist / restore tested | ❌ / ❌ |
 | Monitoring exists | ❌ |
 | AI evaluation exists | ❌ |
-| Critical failure scenarios handled | 🟡 LLM/tool failures, crashes, redeliveries, send failures (M4); order safety pending (M5) |
+| Critical failure scenarios handled | 🟡 LLM/tool failures, crashes, redeliveries, send failures (M4), order safety (M5); real-LLM output checks pending (M3) |
 | One real merchant used it / real traffic tested | ❌ |
 | No critical data leakage | 🟡 none found; not yet proven exhaustively |
 | 2–5 stores operate safely | ❌ |
