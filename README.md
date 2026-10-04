@@ -60,13 +60,13 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 65 tests. They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 78 tests. They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
 | Suite | What it proves |
 |---|---|
-| `test_tenant_isolation.py` (**mandatory**) | Business A can't read, modify or delete B's products, orders, customers, conversations or knowledge through the API, the agent tools, the repositories, the knowledge search or forged JWTs. Every tenant table has `business_id NOT NULL`. One WhatsApp number maps to exactly one business, and the same customer number is a separate customer in each business. |
+| `test_tenant_isolation.py` (**mandatory**) | Business A can't read, modify or infer B's data through any id-bearing API route (the matrix fails if a new route isn't covered), lists/search/stats/usage, the agent tools, customer chat, webhooks, the repositories or forged/stale JWTs. The database itself rejects cross-tenant references and `business_id` changes (the test fails if a new tenant FK isn't guarded). Concurrent checkouts in two stores stay isolated. |
 | `test_e2e.py` | The section-37 demo, automated: signed webhook → search → "add the second one" → exact total incl. delivery → order → pay → signed provider callback → paid → WhatsApp confirmation. Store 2 then runs on the same engine with a completely different catalog. |
 | `test_products.py` | CRUD, CSV validation (row/column errors, all-or-nothing by default, SKU upsert), search precision + price filter, inventory ledger |
 | `test_commerce.py` | Cart math, delivery zones, stock checks, order price snapshot, restock on cancel, state machine, admin can't set `paid` |
@@ -78,7 +78,9 @@ on every run, which also proves the migrations work on a clean database. Externa
 ---
 
 ## Onboarding a new business (no code)
-1. `POST /api/auth/register`, or the Register page, creates the business, its owner, default settings and the agent config.
+1. On the server: `python -m app.cli create-business --name "Shop" --email owner@shop.rw` (prints a generated
+   password once). In development, `POST /api/auth/register` / the Register page also works; **public registration
+   is always closed when `APP_ENV=production`** (and can be closed elsewhere with `ALLOW_PUBLIC_REGISTRATION=false`).
 2. **Business & AI** sets the profile, hours, currency, tone, greeting, business rules and toggles (delivery / payment / human handoff).
 3. **Products** takes a CSV upload (`name,description,price,category,sku,stock_quantity`). Errors are reported per row and column.
 4. **Settings** holds delivery zones (fee + areas matched against the customer's location) and the payment provider.
@@ -136,7 +138,7 @@ GET /api/customers   GET /api/customers/{id}
 GET /api/conversations[?needs_attention=]   GET /api/conversations/{id} (messages + agent runs)
 POST /api/conversations/{id}/reply | /handoff | /return-to-ai
 GET|POST /api/knowledge   POST /api/knowledge/upload   GET /api/knowledge/search   DELETE /api/knowledge/{id}
-GET /api/dashboard/stats      POST /api/dev/simulate (dev)
+GET /api/dashboard/stats | /api/dashboard/usage      POST /api/dev/simulate (dev)
 GET|POST /webhooks/whatsapp   POST /webhooks/payments/mock   PUT|POST /webhooks/payments/momo/{payment_id}
 GET /health
 ```
@@ -153,7 +155,8 @@ GET /health
 
 ## Security notes
 - bcrypt password hashing and HS256 JWTs (tenant + user re-checked against the DB on every request).
-- Tenant scoping lives in the repository layer, and a spoofed `business_id` is ignored.
+- Tenant scoping lives in the repository layer, and a spoofed `business_id` is ignored. Underneath, database
+  triggers reject any row that references another tenant's row and make `business_id` immutable.
 - Meta signature verification (required in production). The mock payment callback uses HMAC, and MoMo statuses
   are re-verified.
 - WhatsApp tokens are encrypted at rest (`ENCRYPTION_KEY` is required in production) and never returned by the API.

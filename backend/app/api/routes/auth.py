@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import TenantContext, get_tenant
+from app.core.config import settings
 from app.core.ratelimit import auth_limiter
 from app.db.session import get_db
 from app.schemas.api import LoginIn, RegisterIn, TokenOut
@@ -22,6 +23,8 @@ def _user(u) -> dict:
 
 @router.post("/register", response_model=TokenOut, status_code=201)
 def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)):
+    if not settings.registration_open:
+        raise HTTPException(403, "Public registration is closed. Contact the Duka team to onboard your business.")
     _limit(request)
     business, user, token = business_service.register_business(
         db, business_name=body.business_name, email=body.email, password=body.password, full_name=body.full_name,

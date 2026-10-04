@@ -1,7 +1,11 @@
-from fastapi import APIRouter, Depends
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 
 from app.api.deps import TenantContext, get_tenant
-from app.models import Order
+from app.models import AgentRun, Message, Order
+from app.repositories.repos import AgentRunRepo, MessageRepo
 from app.schemas.api import OrderOut, ProductOut
 from app.services.commerce_service import OrderService
 from app.services.conversation_service import ConversationService, CustomerService
@@ -32,4 +36,25 @@ def stats(ctx: TenantContext = Depends(get_tenant)):
         "needs_attention": convs.attention_count(),
         "low_stock": [ProductOut.of(p).model_dump(mode="json") for p in products.low_stock()[:10]],
         "recent_orders": [OrderOut.model_validate(o).model_dump(mode="json") for o in orders.list(limit=8)],
+    }
+
+
+@router.get("/usage")
+def usage(days: int = Query(30, ge=1, le=366), ctx: TenantContext = Depends(get_tenant)):
+    """AI and messaging usage for this tenant over the last `days` days (from agent_runs/messages)."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    runs = AgentRunRepo(ctx.db, ctx.business_id)
+    row = ctx.db.execute(runs.select(
+        func.count(AgentRun.id), func.coalesce(func.sum(AgentRun.llm_calls), 0),
+        func.coalesce(func.sum(AgentRun.prompt_tokens), 0), func.coalesce(func.sum(AgentRun.completion_tokens), 0),
+        func.count(AgentRun.id).filter(AgentRun.status == "error"),
+        func.avg(AgentRun.latency_ms)).where(AgentRun.created_at >= since)).one()
+    messages = MessageRepo(ctx.db, ctx.business_id)
+    return {
+        "days": days,
+        "agent_runs": row[0], "llm_calls": int(row[1]), "prompt_tokens": int(row[2]),
+        "completion_tokens": int(row[3]), "agent_errors": row[4],
+        "avg_latency_ms": round(float(row[5]), 1) if row[5] is not None else None,
+        "messages_in": messages.count(Message.role == "customer", Message.created_at >= since),
+        "messages_out": messages.count(Message.role.in_(("assistant", "human_agent")), Message.created_at >= since),
     }

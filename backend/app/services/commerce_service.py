@@ -247,8 +247,10 @@ class OrderService:
         self.inventory = InventoryRepo(db, business_id)
 
     def _next_number(self, business: Business) -> str:
-        # Lock the tenant row to serialise order-number allocation for this business only.
-        self.db.execute(select(Business.id).where(Business.id == business.id).with_for_update())
+        # Lock the tenant row to serialise order-number allocation for this business only. NO KEY UPDATE, not
+        # UPDATE: every insert in this transaction already holds FOR KEY SHARE on the business row (business_id
+        # FK), and two checkouts upgrading those to FOR UPDATE deadlock each other.
+        self.db.execute(select(Business.id).where(Business.id == business.id).with_for_update(key_share=True))
         n = self.orders.count() + 1
         while self.orders.first(Order.order_number == f"{business.order_prefix}-{n:05d}"):
             n += 1

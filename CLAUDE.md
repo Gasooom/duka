@@ -7,7 +7,10 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
    `app/repositories` (`TenantRepository` subclasses bound to a `business_id`). Never write unscoped
    `select(Model)` against tenant tables in services/routes. The tenant comes from the JWT (admin API) or from
    `whatsapp_accounts.phone_number_id` (webhooks) or from the payment row (payment callbacks) — never from input.
-   `tests/test_tenant_isolation.py` must stay green; add a case for every new tenant-owned entity.
+   `tests/test_tenant_isolation.py` must stay green; add a case for every new tenant-owned entity. New id routes
+   must be added to `IDOR_MATRIX`; new tenant->tenant foreign keys need a `duka_enforce_same_tenant` trigger in a
+   migration (both are enforced by meta-tests). Public registration is closed in production; tenants are created
+   with `python -m app.cli create-business`.
 2. **No business-specific code.** No `if business == ...`. Differences live in `businesses`, `agent_configs`,
    `business_settings`, `delivery_zones`, products and knowledge.
 3. **The LLM never decides facts.** Prices, stock, totals, delivery fees, order/payment status come from tools →

@@ -59,6 +59,13 @@ class Settings(BaseSettings):
 
     enable_dev_tools: bool = True
     rate_limit_per_minute: int = 30
+    # Self-service business registration. Always closed in production: pilot tenants are created
+    # with `python -m app.cli create-business` on the server.
+    allow_public_registration: bool = True
+
+    @property
+    def registration_open(self) -> bool:
+        return self.allow_public_registration and not self.is_production
 
     @property
     def is_production(self) -> bool:
