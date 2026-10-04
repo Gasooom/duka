@@ -100,6 +100,14 @@ class Settings(BaseSettings):
             problems.append("JWT_SECRET must be a random string of at least 32 characters")
         if not self.encryption_key:
             problems.append("ENCRYPTION_KEY must be set (Fernet key for WhatsApp tokens)")
+        else:
+            try:
+                from cryptography.fernet import Fernet
+                Fernet(self.encryption_key.encode())
+            except (ValueError, TypeError):
+                problems.append("ENCRYPTION_KEY is not a valid Fernet key")
+        if not self.public_base_url.startswith("https://"):
+            problems.append("PUBLIC_BASE_URL must be the https:// address of this deployment")
         if self.llm_provider != "openai_compat" or not self.llm_api_key:
             problems.append("LLM_PROVIDER=openai_compat with LLM_API_KEY is required (the rules engine is not AI)")
         if not self.whatsapp_app_secret:

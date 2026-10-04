@@ -9,3 +9,7 @@ frontend/next-env.d.ts
 *.log
 .DS_Store
 backups/
+deploy/.env.production
+deploy/.env.staging
+deploy/.env.*.local
+deploy/.env.rehearsal

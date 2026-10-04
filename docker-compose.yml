@@ -1,4 +1,4 @@
-# One command:  docker compose up --build
+# DEVELOPMENT stack. One command:  docker compose up --build   (production: deploy/docker-compose.prod.yml)
 # Starts postgres (with pgvector), the FastAPI backend (runs migrations on boot) and the Next.js dashboard.
 services:
   db:
@@ -16,7 +16,9 @@ services:
       retries: 20
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args: {INSTALL_DEV: "true"}   # tests + lint run in this image
     env_file: [.env]
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce}@db:5432/${POSTGRES_DB:-commerce}

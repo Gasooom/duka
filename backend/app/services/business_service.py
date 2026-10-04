@@ -35,7 +35,11 @@ def _order_prefix(name: str) -> str:
 
 def register_business(db: Session, *, business_name: str, email: str, password: str, full_name: str | None = None,
                       business_type: str = "retail", currency: str = "RWF") -> tuple[Business, User, str]:
-    email = email.strip().lower()
+    from email_validator import EmailNotValidError, validate_email
+    try:  # same rules as the login API, so no account is created that can never sign in
+        email = validate_email(email.strip(), check_deliverability=False).normalized.lower()
+    except EmailNotValidError as exc:
+        raise ValidationError(f"Invalid email: {exc}")
     if len(password) < 8:
         raise ValidationError("Password must be at least 8 characters")
     if db.scalar(select(User).where(func.lower(User.email) == email)):
@@ -158,6 +162,9 @@ class BusinessConfigService:
                          access_token: str | None, mode: str) -> WhatsAppAccount:
         if mode not in ("cloud", "dev"):
             raise ValidationError("mode must be 'cloud' or 'dev'")
+        from app.core.config import settings as app_settings
+        if mode == "dev" and app_settings.is_production:
+            raise ValidationError("Simulated (dev) WhatsApp numbers are not available in production")
         if mode == "cloud" and not access_token:
             existing = WhatsAppAccountRepo(self.db, self.business_id).first(
                 WhatsAppAccount.phone_number_id == phone_number_id)

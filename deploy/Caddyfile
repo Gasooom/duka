@@ -1,0 +1,42 @@
+# Automatic HTTPS (Let's Encrypt) for DUKA_DOMAIN; HTTP is redirected to HTTPS.
+{
+	email {$ACME_EMAIL:admin@example.invalid}
+}
+
+{$DUKA_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# The API (incl. the dashboard's /api calls, so the backend sees each client's real IP), Meta's webhook and
+	# the health/metrics endpoints go straight to the backend.
+	@backend path /api/* /webhooks/* /healthz /readyz /health /metrics
+	handle @backend {
+		reverse_proxy backend:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	log {
+		output stdout
+		# Never keep query strings (Meta sends hub.verify_token there) or credentials.
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "\?.*" ""
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}

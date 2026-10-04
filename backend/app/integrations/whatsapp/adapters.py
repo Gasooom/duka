@@ -95,12 +95,14 @@ class CloudWhatsAppAdapter(WhatsAppAdapter):
 
 
 class _MisconfiguredAdapter(WhatsAppAdapter):
-    """Cloud account without a token: fail loudly instead of pretending to send."""
+    """Cannot send (no token, or simulation in production): fail loudly instead of pretending to send."""
     mode = "cloud"
 
+    def __init__(self, reason: str = "WhatsApp access token missing for this account"):
+        self.reason = reason
+
     def send_text(self, to: str, body: str) -> SendResult:
-        return SendResult(ok=False, wa_message_id=None, delivery_status="failed",
-                          error="WhatsApp access token missing for this account")
+        return SendResult(ok=False, wa_message_id=None, delivery_status="failed", error=self.reason)
 
 
 _adapter_override: WhatsAppAdapter | None = None
@@ -115,6 +117,9 @@ def set_adapter_override(adapter: WhatsAppAdapter | None) -> None:
 def get_adapter(account: WhatsAppAccount) -> WhatsAppAdapter:
     if _adapter_override is not None:
         return _adapter_override
+    if settings.is_production and (settings.whatsapp_force_dev or account.mode == "dev"):
+        # Never pretend to deliver in production: a simulated send would hide that customers get nothing.
+        return _MisconfiguredAdapter("Simulated WhatsApp sending is disabled in production")
     if settings.whatsapp_force_dev or account.mode == "dev":
         return DevWhatsAppAdapter()
     if not account.access_token_encrypted:

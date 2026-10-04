@@ -34,6 +34,9 @@ inbound queue (`webhook_events`) and the outbound outbox are Postgres tables wor
 
 ---
 
+> **Production:** see `docs/DEPLOYMENT.md` (`deploy/docker-compose.prod.yml`: Caddy HTTPS, nothing else exposed)
+> and `docs/OPERATIONS.md`. The quick start below is the development stack.
+
 ## Quick start (Docker)
 
 ```bash
@@ -64,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 230 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 232 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -184,8 +187,8 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 - ✅ The backend and the production Next.js build ran locally. Playwright drove the dashboard: login, the simulator
   flow, the debugger trace, simulating payment → paid, the CSV error report, and the mobile layout (no horizontal
   scroll). There were no console errors.
-- ⚠️ `docker compose up` itself was **not** run here: the build sandbox couldn't pull images from Docker Hub. The
-  compose file passes `docker compose config`. The same services, commands and migrations were run natively.
+- ✅ `docker compose up --build` (development) and the production compose stack (local HTTPS rehearsal,
+  `deploy/verify_deployment.sh` 24/24) both run. Status per milestone: `docs/MILESTONES.md`.
 - ⚠️ Live WhatsApp, LLM and MoMo are blocked by external credentials (see the table above).
 
 ## Security notes

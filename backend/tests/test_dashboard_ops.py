@@ -49,3 +49,9 @@ def test_dev_tools_flag_is_exposed_and_off_in_production(fashion, monkeypatch):
     assert fashion.get("/api/auth/me").json()["features"]["dev_tools"] is True
     monkeypatch.setattr(settings, "app_env", "production")
     assert fashion.get("/api/auth/me").json()["features"] == {"dev_tools": False, "registration_open": False}
+
+
+def test_operator_cli_refuses_an_email_the_login_page_would_reject(capsys):
+    from app.cli import main
+    assert main(["create-business", "--name", "Shop", "--email", "owner@shop.test"]) == 1
+    assert "Invalid email" in capsys.readouterr().err

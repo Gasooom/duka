@@ -79,9 +79,13 @@ def test_production_refuses_unsafe_configuration():
     for needle in ("JWT_SECRET", "ENCRYPTION_KEY", "LLM_PROVIDER", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN",
                    "DATABASE_URL"):
         assert needle in problems
-    safe = Settings(app_env="production", jwt_secret="x" * 40, encryption_key="k", llm_provider="openai_compat",
-                    llm_api_key="sk-test", whatsapp_app_secret="s", whatsapp_verify_token="v" * 20,
-                    database_url="postgresql+psycopg://duka:Str0ng@db:5432/duka")
+    from cryptography.fernet import Fernet
+    assert "ENCRYPTION_KEY is not a valid" in " ".join(Settings(app_env="production", encryption_key="k").production_problems())
+    assert "PUBLIC_BASE_URL" in problems
+    safe = Settings(app_env="production", jwt_secret="x" * 40, encryption_key=Fernet.generate_key().decode(),
+                    llm_provider="openai_compat", llm_api_key="sk-test", whatsapp_app_secret="s",
+                    whatsapp_verify_token="v" * 20, database_url="postgresql+psycopg://duka:Str0ng@db:5432/duka",
+                    public_base_url="https://duka.example.rw")
     assert safe.production_problems() == []
 
 
@@ -93,3 +97,16 @@ def test_missing_llm_key_behaves_like_an_outage_not_a_crash(fashion, outbox, mon
     assert outbox.sent[-1][1].startswith("Sorry, I'm having trouble")
     run = fashion.get(f"/api/conversations/{fashion.get('/api/conversations').json()[0]['id']}").json()["agent_runs"][0]
     assert run["status"] == "error" and "LLM_API_KEY" in run["error"]
+
+
+def test_simulated_whatsapp_is_refused_in_production(fashion, outbox, monkeypatch, db):
+    from app.core.config import settings
+    from app.integrations.whatsapp.adapters import get_adapter, set_adapter_override
+    from app.models import WhatsAppAccount
+    monkeypatch.setattr(settings, "app_env", "production")
+    r = fashion.post("/api/whatsapp/accounts", json={"phone_number_id": "pnid-dev-prod", "mode": "dev"})
+    assert r.status_code == 422
+    set_adapter_override(None)
+    acct = db.query(WhatsAppAccount).filter_by(phone_number_id=fashion.phone_number_id).one()  # created in dev
+    result = get_adapter(acct).send_text("250788111222", "hi")
+    assert not result.ok and "disabled in production" in result.error

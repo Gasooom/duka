@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4–M8 complete; M3 code complete, live LLM blocked).
+Last updated: 2026-10-04 (M2, M4–M8 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -348,10 +348,50 @@ Evidence:
 Remaining (need accounts, configured in M9): an external uptime monitor polling `/readyz` with SMS/e-mail
 alerts; off-site copy of `backups/` (S3-compatible/B2 bucket); scheduling backups with cron on the server.
 
-### M9 — Production deployment · NOT STARTED
-Current compose is dev-only: Postgres published on `0.0.0.0:5432` with `commerce/commerce`; no TLS/reverse
-proxy; no restart policies; dev dependencies in the backend image; `/docs` exposed; no prod/staging config
-split; `ENCRYPTION_KEY` only enforced on first use (app boots without it); no domain.
+### M9 — Production deployment · READY, rehearsed locally · BLOCKED on a server, a domain and accounts
+
+Delivered (`deploy/`, `docs/DEPLOYMENT.md`):
+- `deploy/docker-compose.prod.yml`: Caddy (automatic Let's Encrypt HTTPS, HTTP->HTTPS, HSTS and security
+  headers, access log without query strings/credentials) is the **only service publishing ports**; PostgreSQL
+  (persistent volume), API and dashboard are internal only; `restart: unless-stopped` everywhere; healthchecks;
+  json-file log rotation (20 MB × 5). `/api/*` goes straight to the backend so rate limits see real client IPs.
+- Production backend image without test tooling (`INSTALL_DEV=false`), non-root, `--proxy-headers`.
+- Separate configuration per environment: `.env` (dev), `deploy/.env.staging`, `deploy/.env.production`
+  (template with secret-generation commands; real files are git-ignored). The backend refuses to start in
+  production with weak/missing secrets, an invalid Fernet key, no real LLM, the default DB password or a non-https
+  public URL. OpenAPI docs, the simulator, mock payments, public registration and **simulated WhatsApp numbers**
+  are off in production.
+- `deploy/deploy.sh` (build, start, wait for HTTPS readiness) and `deploy/verify_deployment.sh` (24 checks).
+
+Fixed during M9:
+- Production accepted a simulated ("dev") WhatsApp number: a shop could look live while no customer ever received
+  a reply. Now refused when connecting and when sending (regression test).
+- The operator CLI could create an owner whose e-mail the login API rejects (reserved domains such as `.test`),
+  i.e. an account that can never sign in. Account creation now uses the same validator (regression test).
+
+Evidence — **local production rehearsal** (the real production compose file, `DUKA_DOMAIN=localhost` with
+Caddy's internal CA, freshly generated secrets, LLM/Meta URLs pointed at an unreachable port so nothing external
+was called):
+- `deploy/verify_deployment.sh` -> **24/24**: HTTP->HTTPS (308), liveness/readiness over HTTPS, dashboard served,
+  HSTS / nosniff / frame-deny, no Server header, docs disabled, metrics and readiness details only with the ops
+  token, registration closed, Meta verify handshake (right/wrong token), unsigned webhook 401 / signed 200,
+  PostgreSQL / API / dashboard not published, restart policies, log rotation, no pytest in the image, non-root,
+  verify token absent from all logs.
+- Production-mode scenario: pilot shop created with the CLI -> owner logs in over HTTPS -> simulated number
+  refused (422) -> cloud number connected -> signed inbound WhatsApp message through Caddy is persisted and
+  processed (`done`) -> LLM unreachable: agent run `error`, customer reply is the fallback -> Meta unreachable: the
+  reply waits in `retry` instead of being lost -> readiness `ok`.
+- Crash recovery: the API's PID 1 killed -> container restarted automatically (RestartCount 1), readiness ok.
+- Backup + verified restore on the production topology: `RESTORE VERIFIED` (24 tables, real login on the copy).
+- `pytest -q` -> 232 passed; ruff clean. The rehearsal stack and its volumes were removed afterwards.
+
+Blocked — what you need to provide (then follow `docs/DEPLOYMENT.md`):
+1. A server (Ubuntu 24.04, 2 vCPU / 4 GB) and SSH access.
+2. A domain with an A record to that server.
+3. LLM provider key (+ base URL/model) — also unblocks M3.
+4. Meta WhatsApp: app secret, verify token, the pilot shop's phone number id and permanent access token — also
+   unblocks M4's live verification.
+5. An uptime-monitor account (alerts) and an S3-compatible/B2 bucket (off-site backups).
 
 ### M10 — AI evaluation suite · NOT STARTED
 No eval set, no versioning, no prompt-injection or multilingual cases.
@@ -375,9 +415,9 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Owner can review/accept orders | ✅ M5 |
 | Human takeover works | ✅ M5/M6 (detection EN/RW/FR/SW, low confidence, voice notes, after hours, takeover, AI pause, explicit return) |
 | Merchant dashboard works | ✅ M7 (headless browser walk-through 20/20, live refresh) |
-| Production HTTPS works | ❌ |
-| Secrets are protected | 🟡 env-based, encrypted tokens; no prod secret handling |
-| PostgreSQL is not publicly exposed | ❌ published on 0.0.0.0:5432 |
+| Production HTTPS works | 🟡 Caddy/HTTPS rehearsed locally (M9); needs the real domain |
+| Secrets are protected | ✅ separate env files, startup refusal on weak secrets, encrypted tokens, scrubbed logs (M8/M9) |
+| PostgreSQL is not publicly exposed | ✅ production compose publishes no DB port (verified in rehearsal); dev compose still does, for local use |
 | Backups exist / restore tested | 🟡 scripts + verified restore locally (M8); server cron + off-site copy pending (M9) / ✅ restore verified (M8) |
 | Monitoring exists | 🟡 /readyz, /metrics, scrubbed JSON logs (M8); external monitor needs an account (M9) |
 | AI evaluation exists | ❌ |
