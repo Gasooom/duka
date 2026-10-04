@@ -12,9 +12,25 @@ from app.models import Business, Conversation, User
 from app.services import audit_service
 from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService
+from app.services.hours import closed_until
 from app.services.messaging_service import notify_owner, send_to_customer
 
 HANDOFF_REPLY = "I've passed your conversation to our team. Someone will reply here shortly."
+
+
+def handoff_reply(business: Business) -> str:
+    """Honest expectation: after hours, say when the team will be back instead of 'shortly'."""
+    opening = closed_until(business.business_hours, business.timezone)
+    if opening:
+        return (f"I've passed your conversation to our team. We're closed right now, so someone will reply here "
+                f"when we open ({opening}).")
+    return HANDOFF_REPLY
+
+
+def ai_paused_reply(business: Business) -> str:
+    opening = closed_until(business.business_hours, business.timezone)
+    when = f"when we open ({opening})" if opening else "soon"
+    return f"Thanks for your message! Our team will reply here {when}."
 
 
 def request_human(db: Session, business: Business, conv: Conversation, reason: str) -> None:

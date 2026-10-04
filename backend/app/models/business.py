@@ -48,6 +48,8 @@ class BusinessSettings(IdMixin, TimestampMixin, TenantMixin, Base):
     __table_args__ = (UniqueConstraint("business_id"),)
 
     # manual (owner records payments; default) | momo | mock (development only)
+    # Business-wide switch: when False the assistant sends nothing; messages wait for the team in the inbox.
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     payment_provider: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
     payment_instructions: Mapped[str | None] = mapped_column(Text)  # e.g. "MoMo 0788... (Name), send the ref"
     # Where new orders / handoffs are announced. Outside WhatsApp's 24h window Meta requires an approved

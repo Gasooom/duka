@@ -65,7 +65,7 @@ def _media(fashion, client, mtype, wa_id):
 
 def test_voice_notes_and_media_go_to_a_human_not_a_guess(fashion, outbox, client):
     _media(fashion, client, "audio", "wvoice")
-    assert "can't open voice notes" in outbox.sent[0][1] and "passed it to our team" in outbox.sent[0][1]
+    assert "can't open voice notes" in outbox.sent[0][1] and "passed your message to our team" in outbox.sent[0][1]
     conv = fashion.get("/api/conversations").json()[0]
     assert conv["status"] == "human" and conv["needs_attention"] is True
     assert "voice notes" in conv["handoff_reason"]

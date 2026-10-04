@@ -29,7 +29,7 @@ from app.services.commerce_service import CartService, CheckoutChanged, Checkout
 from app.services.conversation_service import ConversationService
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
 from app.tools.registry import ToolContext, execute_tool, tools_for
-from app.workflows.handoff import HANDOFF_REPLY, request_human
+from app.workflows.handoff import handoff_reply, request_human
 from app.workflows.orders import order_placed_text, place_confirmed_order
 
 logger = get_logger(__name__)
@@ -275,7 +275,7 @@ class AgentEngine:
             unsure = unsure or run.status == "error"
             handed_off = self._track_uncertainty(conv, unsure, steps) or handed_off
             if handed_off and unsure:
-                text = HANDOFF_REPLY
+                text = handoff_reply(self.business)
         if not text:
             text = self.cfg.fallback_message
         run.steps = steps
@@ -342,7 +342,7 @@ class AgentEngine:
             if self.business.human_handoff_enabled:
                 request_human(self.db, self.business, conv, "Customer asked for a person")
                 outcome.handed_off = True
-                return HANDOFF_REPLY, "handoff", {"reason": "customer asked for a person"}
+                return handoff_reply(self.business), "handoff", {"reason": "customer asked for a person"}
             contact = f" You can reach us at {self.business.phone}." if self.business.phone else ""
             return (f"Our team isn't available on this chat right now.{contact}", "handoff_unavailable",
                     {"reason": "handoff disabled"})

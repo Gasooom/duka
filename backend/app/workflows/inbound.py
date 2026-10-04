@@ -26,10 +26,11 @@ from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
 from app.models import Business, Message, WebhookEvent, WhatsAppAccount
+from app.repositories.repos import SettingsRepo
 from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
-from app.services.messaging_service import deliver_outbox, send_to_customer, take_outbox
-from app.workflows.handoff import request_human
+from app.services.messaging_service import deliver_outbox, notify_owner, send_to_customer, take_outbox
+from app.workflows.handoff import ai_paused_reply, handoff_reply, request_human
 
 logger = get_logger(__name__)
 IGNORED_TYPES = {"reaction", "system", "ephemeral"}
@@ -243,6 +244,19 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         conv.needs_attention = True
         return ProcessResult(status="human_mode", business_id=business.id, conversation_id=conv.id)
 
+    shop_settings = SettingsRepo(db, business.id).first()
+    if shop_settings is not None and not shop_settings.ai_enabled:
+        # Assistant paused by the owner: nothing automated happens (no answers, no orders). The customer gets
+        # one acknowledgement per waiting conversation and the owner one alert.
+        if not conv.needs_attention:
+            conv.needs_attention = True
+            send_to_customer(db, business.id, conv, ai_paused_reply(business), metadata={"event": "ai_paused"})
+            notify_owner(db, business.id, "message_waiting",
+                         f"💬 New WhatsApp message from {customer.name or '+' + customer.whatsapp_number} while the "
+                         f"assistant is paused: {text_[:200] or '[' + msg.type + ']'}",
+                         entity_type="conversation", entity_id=conv.id)
+        return ProcessResult(status="ai_paused", business_id=business.id, conversation_id=conv.id)
+
     if not inbound_message_limiter.allow(f"{business.id}:{customer.whatsapp_number}"):
         return ProcessResult(status="rate_limited", business_id=business.id, conversation_id=conv.id)
 
@@ -253,7 +267,7 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         if business.human_handoff_enabled:
             # No speech-to-text / vision in the MVP: never guess what a voice note or photo says.
             request_human(db, business, conv, f"Customer sent {label}")
-            reply = f"I can't open {label} yet, so I've passed it to our team. Someone will reply here shortly."
+            reply = f"I can't open {label} yet. " + handoff_reply(business).replace("conversation", "message", 1)
         else:
             reply = "Sorry, I can only read text messages for now. Please type your request."
         send_to_customer(db, business.id, conv, reply)

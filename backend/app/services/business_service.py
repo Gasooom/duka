@@ -18,7 +18,7 @@ BUSINESS_FIELDS = {
 }
 AGENT_FIELDS = {"system_prompt", "tone", "language", "greeting", "fallback_message", "business_rules", "model",
                 "temperature", "max_history_messages"}
-SETTINGS_FIELDS = {"payment_provider", "payment_instructions", "owner_notification_phone",
+SETTINGS_FIELDS = {"ai_enabled", "payment_provider", "payment_instructions", "owner_notification_phone",
                    "owner_notification_template", "owner_notification_template_language", "low_stock_threshold",
                    "max_order_quantity"}
 
@@ -82,6 +82,19 @@ class BusinessConfigService:
         return get_business(self.db, self.business_id)
 
     def update_business(self, data: dict[str, Any]) -> Business:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        from app.services.hours import parse_hours
+        if data.get("business_hours") is not None:
+            try:
+                parse_hours(data["business_hours"])
+            except ValueError as exc:
+                raise ValidationError(f"Business hours: {exc}")
+        if data.get("timezone"):
+            try:
+                ZoneInfo(data["timezone"])
+            except (ZoneInfoNotFoundError, ValueError):
+                raise ValidationError(f"Unknown timezone '{data['timezone']}' (e.g. Africa/Kigali)")
         b = self.business
         for k, v in data.items():
             if k in BUSINESS_FIELDS and v is not None:

@@ -158,8 +158,11 @@ def check_inventory(ctx: ToolContext, a: ProductRefArgs) -> dict[str, Any]:
 def get_business_information(ctx: ToolContext, a: NoArgs) -> dict[str, Any]:
     b = ctx.business
     zones = DeliveryService(ctx.db, ctx.business_id).zones.list()
+    from app.services.hours import is_open, next_opening
     return {"name": b.name, "description": b.description, "type": b.business_type, "phone": b.phone,
             "address": b.address, "currency": b.currency, "business_hours": b.business_hours,
+            "open_now": is_open(b.business_hours, b.timezone),
+            "next_opening": next_opening(b.business_hours, b.timezone),
             "delivery_enabled": b.delivery_enabled, "payment_enabled": b.payment_enabled,
             "delivery_zones": [{"name": z.name, "fee": float(z.fee), "estimated_time": z.estimated_time,
                                 "areas": z.areas} for z in zones if z.active] if b.delivery_enabled else []}

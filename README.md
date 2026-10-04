@@ -64,7 +64,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 195 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 213 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -80,6 +80,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_ai_safety.py` | Invented prices/stock/fees/statuses/products never reach the customer, prompt injection with a fully compromised model, cross-tenant requests, no phone number sent to the LLM, retry/time budget, malformed output, handoff after repeated failures, multilingual grounding |
 | `test_agent.py` | OpenAI-compatible tool loop, token/latency capture, invalid/unknown tool calls contained, iteration cap, LLM outage → fallback, greeting fast path, bounded context, summaries |
 | `test_durability.py` | Persist-before-ack, crash recovery (lease), redeliveries have one effect, rollback means no reply, retries/dead-letter, per-customer ordering, outbox retry/failure, background threads |
+| `test_human_control.py` | Business hours parsing in the shop's timezone, after-hours expectations for handoffs/voice notes/orders, `open_now` as a tool fact, business-wide AI pause |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
 
 ---
@@ -88,7 +89,9 @@ on every run, which also proves the migrations work on a clean database. Externa
 1. On the server: `python -m app.cli create-business --name "Shop" --email owner@shop.rw` (prints a generated
    password once). In development, `POST /api/auth/register` / the Register page also works; **public registration
    is always closed when `APP_ENV=production`** (and can be closed elsewhere with `ALLOW_PUBLIC_REGISTRATION=false`).
-2. **Business & AI** sets the profile, hours, currency, tone, greeting, business rules and toggles (delivery / payment / human handoff).
+2. **Business & AI** sets the profile, hours (e.g. `Mon-Sat: 08:00-20:00`, `Sun: closed` — after hours customers
+   are told when the team is back), currency, tone, greeting, business rules and toggles (delivery / payment /
+   human handoff). **Settings** has the switch to pause the AI for the whole shop.
 3. **Products** takes a CSV upload (`name,description,price,category,sku,stock_quantity`). Errors are reported per row and column.
 4. **Settings** holds delivery zones (fee + the area names matched against the customer's address — list them
    well, an address naming no area is refused), how customers pay (manual by default, with the exact payment

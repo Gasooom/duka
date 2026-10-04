@@ -99,6 +99,7 @@ class AgentConfigPatch(BaseModel):
 
 
 class SettingsOut(ORM):
+    ai_enabled: bool
     payment_provider: str
     payment_instructions: str | None
     owner_notification_phone: str | None
@@ -109,6 +110,7 @@ class SettingsOut(ORM):
 
 
 class SettingsPatch(BaseModel):
+    ai_enabled: bool | None = None
     payment_provider: str | None = Field(None, pattern=r"^(manual|mock|momo)$")
     payment_instructions: str | None = Field(None, max_length=1000)
     owner_notification_phone: str | None = Field(None, max_length=32)

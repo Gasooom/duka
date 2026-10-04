@@ -8,6 +8,7 @@ from app.models import Business, Conversation, Customer, Message, Order, Payment
 from app.repositories.repos import ConversationRepo, SettingsRepo
 from app.services import audit_service
 from app.services.commerce_service import CheckoutService, OrderService, money
+from app.services.hours import closed_until
 from app.services.messaging_service import notify_owner, send_to_customer
 from app.services.payment_service import PaymentService
 
@@ -53,7 +54,14 @@ def order_placed_text(order: Order, business: Business) -> str:
     return (f"✅ Order {order.order_number} confirmed!\n{_items(order)}\n"
             f"{'Delivery: ' + order.currency + ' ' + money(order.delivery_fee) + chr(10) if order.delivery_zone_name else ''}"
             f"Total: {order.currency} {money(order.total)}\n"
-            f"{business.name} will review it and confirm shortly.")
+            f"{_review_eta(business)}")
+
+
+def _review_eta(business: Business) -> str:
+    opening = closed_until(business.business_hours, business.timezone)
+    if opening:
+        return f"{business.name} is closed right now and will review it when it opens ({opening})."
+    return f"{business.name} will review it and confirm shortly."
 
 
 _STATUS_TEXT = {

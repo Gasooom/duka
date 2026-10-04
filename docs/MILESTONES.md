@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4, M5 complete; M3 code complete, live LLM blocked).
+Last updated: 2026-10-04 (M2, M4, M5, M6 complete; M3 code complete, live LLM blocked).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -250,11 +250,33 @@ Remaining risks:
 - Owner alerts outside WhatsApp's 24 h window need an approved Meta template (configurable, not live-tested).
 - Pickup when delivery is enabled is not offered as a customer choice yet.
 
-### M6 — Human control · IN PROGRESS
-Done in M5: deterministic multilingual "talk to a person", handoff tool, voice notes/media routed to a person,
-owner alert, takeover pauses the AI, staff replies via the outbox, explicit return-to-AI rule, audit.
-Remaining: after-hours behaviour (business hours are stored but unused), low-confidence handoff, a business-wide
-"AI paused" switch, and dashboard live refresh so handoffs are seen without reloading (M7).
+### M6 — Human control · COMPLETE (live WhatsApp delivery shares the M4 Meta blocker)
+
+Rules (all explicit, tested):
+- Customer asks for a person (EN/RW/FR/SW, request phrasing) -> handoff + owner alert, before any LLM call (M5).
+- Low confidence: two consecutive turns the assistant cannot answer reliably (LLM failure, or a reply that fails
+  the grounding check with no tool data to fall back on) -> handoff + owner alert (M3).
+- Unsupported requests: the model is told to hand off; anything it says is grounding-checked (M3).
+- Voice notes / photos / videos / documents / locations -> a person (no speech-to-text or vision is faked) (M5).
+- Owner takeover: the AI is fully paused for that conversation (no agent run at all, no order confirmation),
+  messages stay visible and flagged, staff replies go through the outbox, and **only "Return to AI" resumes**
+  (optional message to the customer; audited; a pending order summary is discarded) (M5).
+- **After hours** (new): business hours are parsed (`Mon-Sat: 08:00-20:00`, `Sun: closed`, `Daily: 7am-9pm`,
+  split shifts, overnight `18:00-02:00`, `24h`) in the business timezone; unreadable hours or an unknown timezone
+  are rejected on save. The assistant keeps answering 24/7, but handoffs, voice notes and new orders tell the
+  customer when the team is back ("closed right now… when we open (Mon at 08:00)") instead of "shortly".
+  `open_now` / `next_opening` are tool facts, so "are you open?" answers are grounded.
+- **Business-wide AI pause** (new, `Settings`): nothing automated happens (no answers, no orders); each waiting
+  conversation gets one acknowledgement (with the opening time after hours) and the owner one alert.
+
+Evidence: `tests/test_human_control.py` (18 cases: open/closed in Africa/Kigali, next opening across a closed
+Sunday, 5 hour formats incl. overnight, rejected hours/timezone, after-hours handoff/voice note/order wording,
+open_now tool fact, pause = no agent runs + one ack + one alert + messages kept + resume, pause blocks order
+confirmation), plus the M5 handoff/takeover tests. `pytest -q` -> 213 passed; ruff clean; migration 0006
+down/up/check clean. Live on Docker: invalid hours -> 422 with an explanation; pause -> one acknowledgement,
+owner alert recorded, AI silent; resume -> the assistant answers again.
+
+Remaining: the dashboard does not refresh by itself yet, so the owner sees new handoffs on reload (M7).
 
 ### M7 — Merchant dashboard · IN PROGRESS
 Present: inbox with takeover/reply/return, conversation debugger, orders list/details/status changes,
@@ -297,7 +319,7 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Explicit order confirmation works | ✅ M5 (server-enforced, tested incl. misbehaving LLM) |
 | Owner receives new-order notification | 🟡 M5 (dashboard + WhatsApp outbox; live Meta delivery untested) |
 | Owner can review/accept orders | ✅ M5 |
-| Human takeover works | ✅ M5 (detection EN/RW/FR/SW, alerts, AI pause, explicit return); after-hours pending (M6) |
+| Human takeover works | ✅ M5/M6 (detection EN/RW/FR/SW, low confidence, voice notes, after hours, takeover, AI pause, explicit return) |
 | Merchant dashboard works | 🟡 |
 | Production HTTPS works | ❌ |
 | Secrets are protected | 🟡 env-based, encrypted tokens; no prod secret handling |
