@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4, M5, M6, M7 complete; M3 code complete, live LLM blocked).
+Last updated: 2026-10-04 (M2, M4–M8 complete; M3 code complete, live LLM blocked).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -311,12 +311,42 @@ Evidence:
 Remaining: no staff invitations/roles UI (single owner login per shop for the pilot); polling, not push
 (fine at pilot scale); JWT in localStorage (httpOnly cookies are a later hardening step).
 
-### M8 — Reliability · NOT STARTED (partial building blocks)
-Present: JSON logs with request/tenant context and key-based redaction; `agent_runs` records latency,
-tokens, errors; `/health` checks DB.
-Missing: `/healthz`; metrics/alerting for LLM errors, webhook failures, send failures, order failures;
-error tracking; backups; restore procedure; restore verification.
-Note: unhandled-error logs include `repr(exc)` which can contain SQL parameters (possible PII).
+### M8 — Reliability · COMPLETE (in-repo) · external monitor + off-site backup storage are deployment dependencies (M9)
+
+- **Probes:** `/healthz` (liveness, used by the Docker healthcheck) and `/readyz` (database, migrations at head,
+  workers alive, inbound backlog, dead letters, failed sends, agent error rate, failed owner alerts) returning 503
+  when customers are affected; details behind `OPS_TOKEN` in production. `/health` kept as an alias.
+- **Metrics:** Prometheus text at `/metrics` (ops token in production): inbound queue by status and oldest age,
+  outbox by status, agent runs by outcome (incl. `ungrounded`), p50/p95 latency, LLM tokens, orders, owner alerts.
+  Derived from PostgreSQL, so they survive restarts and agree across instances.
+- **Logs:** access log (method, path, status, duration; never query strings — Meta's verify token travels there);
+  the JSON formatter scrubs SQL statements/parameters from database errors, bearer tokens, `access_token=`,
+  and phone numbers on every log line; persisted error texts use the same scrubbing.
+- **Fixed during M8:** `alembic/env.py` reconfigured logging on every in-process migration (root level WARN +
+  all existing loggers disabled), silently removing application logs whenever migrations ran inside the process
+  (the test suite; any future in-process migration). Now only the alembic CLI configures logging.
+- **Retention:** processed webhook payloads (message text) are purged after 30 days by the workers.
+- **Production hardening:** OpenAPI `/docs` disabled in production.
+- **Backups:** `scripts/backup.sh` (consistent `pg_dump`, row-count manifest taken around the dump, sha256,
+  retention), `scripts/restore.sh` (new database by default; `--replace-live` keeps the old database renamed),
+  `scripts/verify_restore.sh` (restore into a scratch DB, compare every table with the manifest, run readiness
+  and a real login on the restored copy, drop the scratch DB).
+- **Operator tooling:** `python -m app.cli requeue-dead` (retry dead-lettered messages after a fix);
+  runbook in `docs/OPERATIONS.md`.
+
+Evidence:
+- `tests/test_reliability.py` (13): liveness; readiness ok/degraded (dead letter)/down (stuck backlog, workers
+  not running, migrations behind); metrics exposition; ops token required in production; secrets and phone
+  numbers redacted; a real IntegrityError's customer number scrubbed; access log has no query string; money
+  amounts not mistaken for phone numbers; retention purges only finished old events; requeue-dead recovers a
+  dead-lettered message. `pytest -q` -> 230 passed; ruff clean.
+- **Actual restore performed** on the Docker stack: `scripts/backup.sh` -> 152 KB dump at revision 0007;
+  `scripts/verify_restore.sh` -> checksum ok, 24 tables' counts match the manifest, migrations at head, readiness
+  ok, `fashion@duka.dev` logs in with its real password on the restored copy -> `RESTORE VERIFIED`; scratch DB
+  dropped. Negative checks: a byte-flipped dump fails on checksum; a manifest/count mismatch fails verification.
+
+Remaining (need accounts, configured in M9): an external uptime monitor polling `/readyz` with SMS/e-mail
+alerts; off-site copy of `backups/` (S3-compatible/B2 bucket); scheduling backups with cron on the server.
 
 ### M9 — Production deployment · NOT STARTED
 Current compose is dev-only: Postgres published on `0.0.0.0:5432` with `commerce/commerce`; no TLS/reverse
@@ -348,8 +378,8 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Production HTTPS works | ❌ |
 | Secrets are protected | 🟡 env-based, encrypted tokens; no prod secret handling |
 | PostgreSQL is not publicly exposed | ❌ published on 0.0.0.0:5432 |
-| Backups exist / restore tested | ❌ / ❌ |
-| Monitoring exists | ❌ |
+| Backups exist / restore tested | 🟡 scripts + verified restore locally (M8); server cron + off-site copy pending (M9) / ✅ restore verified (M8) |
+| Monitoring exists | 🟡 /readyz, /metrics, scrubbed JSON logs (M8); external monitor needs an account (M9) |
 | AI evaluation exists | ❌ |
 | Critical failure scenarios handled | 🟡 LLM/tool failures, crashes, redeliveries, send failures (M4), order safety (M5); real-LLM output checks pending (M3) |
 | One real merchant used it / real traffic tested | ❌ |

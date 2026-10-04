@@ -1,6 +1,7 @@
 """Structured JSON logging with request/tenant context propagated via contextvars."""
 import json
 import logging
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -13,16 +14,39 @@ customer_id_var: ContextVar[str | None] = ContextVar("customer_id", default=None
 conversation_id_var: ContextVar[str | None] = ContextVar("conversation_id", default=None)
 
 _SECRET_KEYS = {"password", "token", "access_token", "api_key", "secret", "authorization", "password_hash"}
+_KEEP_DIGITS = {"phone_number_id", "request_id", "duration_ms", "attempt", "attempts", "count", "llm_calls"}
+# Text scrubbing for free-form values (exception messages, provider errors): SQL statements/parameters carry
+# customer data, bearer tokens and phone numbers must never reach log storage.
+_SCRUB = [
+    (re.compile(r"\[parameters: .*?\](?=\s*(\(Background|$|\n))", re.S), "[parameters: ***]"),
+    (re.compile(r"\[SQL: .*?\](?=\s*(\[parameters|\(Background|$|\n))", re.S), "[SQL: ***]"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+"), "Bearer ***"),
+    (re.compile(r"(?i)(access_token|api_key|token|secret)=([^&\s\"']+)"), r"\1=***"),
+    (re.compile(r"(?<![\w-])\+?\d{9,15}(?![\w-])"), lambda m: "***" + m.group(0)[-3:]),
+]
+
+
+def scrub(text: str) -> str:
+    for rx, repl in _SCRUB:
+        text = rx.sub(repl, text)
+    return text
 
 
 def _redact(data: dict[str, Any]) -> dict[str, Any]:
     out = {}
     for k, v in data.items():
-        if any(s in k.lower() for s in _SECRET_KEYS):
+        if any(s in k.lower() for s in _SECRET_KEYS) and k != "phone_number_id":
             out[k] = "***"
+        elif isinstance(v, str) and k not in _KEEP_DIGITS:
+            out[k] = scrub(v)
         else:
             out[k] = v
     return out
+
+
+def safe_error(exc: BaseException, limit: int = 500) -> str:
+    """Exception text for logs/records without SQL parameters, tokens or phone numbers."""
+    return scrub(f"{type(exc).__name__}: {exc}")[:limit]
 
 
 class JsonFormatter(logging.Formatter):
@@ -40,8 +64,9 @@ class JsonFormatter(logging.Formatter):
         extra = getattr(record, "extra_fields", None)
         if extra:
             payload.update(_redact(extra))
+        payload["msg"] = scrub(payload["msg"])
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = scrub(self.formatException(record.exc_info))
         return json.dumps({k: v for k, v in payload.items() if v is not None}, default=str)
 
 

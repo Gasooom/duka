@@ -9,6 +9,7 @@ import time
 from app.core.config import settings
 from app.core.logging import get_logger, log_event
 from app.db.session import SessionLocal
+from app.ops import purge_processed_events
 from app.services.messaging_service import deliver_due, recover_stale_sends
 from app.workflows.inbound import run_due
 
@@ -22,6 +23,7 @@ class BackgroundWorkers:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._last_recovery = 0.0
+        self._last_purge = 0.0
 
     def start(self, count: int) -> None:
         if self._threads or count <= 0:
@@ -54,6 +56,13 @@ class BackgroundWorkers:
         if time.monotonic() - self._last_recovery > 30:
             self._last_recovery = time.monotonic()
             done += recover_stale_sends(self.session_factory)
+        if time.monotonic() - self._last_purge > 3600:
+            self._last_purge = time.monotonic()
+            with self.session_factory() as db:
+                purged = purge_processed_events(db, settings.webhook_event_retention_days)
+                db.commit()
+            if purged:
+                log_event(logger, "webhook_events.purged", operation="retention", count=purged)
         return done
 
     def _loop(self) -> None:

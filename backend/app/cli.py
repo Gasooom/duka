@@ -54,6 +54,25 @@ def reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def requeue_dead(args: argparse.Namespace) -> int:
+    """Retry dead-lettered inbound messages (e.g. after fixing the bug that killed them). Per-customer order is
+    kept because events are claimed by sequence; each gets a fresh set of attempts."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from app.models import WebhookEvent
+    since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    with session_scope() as db:
+        stmt = update(WebhookEvent).where(WebhookEvent.status == "dead", WebhookEvent.updated_at >= since)
+        if args.id:
+            stmt = stmt.where(WebhookEvent.id == args.id)
+        n = db.execute(stmt.values(status="retry", attempts=0, next_attempt_at=datetime.now(timezone.utc),
+                                   last_error=None)).rowcount
+    print(f"requeued {n} dead event(s); the workers will process them now")
+    return 0
+
+
 def llm_check(args: argparse.Namespace) -> int:
     """One real call to the configured LLM with a tool schema: proves the key, model and tool calling work.
     Touches no database. Exit 0 = the model called the tool, 1 = it answered without the tool, 2 = failure."""
@@ -95,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--email", required=True)
     r.add_argument("--password")
     r.set_defaults(func=reset_password)
+    q = sub.add_parser("requeue-dead", help="Retry dead-lettered inbound WhatsApp messages")
+    q.add_argument("--hours", type=int, default=24, help="only events that died in the last N hours")
+    q.add_argument("--id", help="a single webhook_events id")
+    q.set_defaults(func=requeue_dead)
     c = sub.add_parser("llm-check", help="Make one real call to the configured LLM (needs LLM_API_KEY)")
     c.add_argument("--message", default="Muraho! Ndashaka inkweto z'umukara ziri munsi ya 100,000 RWF.")
     c.set_defaults(func=llm_check)

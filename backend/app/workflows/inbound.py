@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.agents.engine import AgentEngine
 from app.core.config import settings
 from app.core.errors import ValidationError
-from app.core.logging import bind_context, clear_context, get_logger, log_event, log_operation
+from app.core.logging import bind_context, clear_context, get_logger, log_event, log_operation, safe_error
 from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
@@ -178,7 +178,7 @@ def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLoc
     except Exception as exc:
         db.rollback()
         take_outbox(db)
-        _record_failure(session_factory, event_id, attempts, f"{type(exc).__name__}: {exc}")
+        _record_failure(session_factory, event_id, attempts, safe_error(exc, 1000))
         return ProcessResult(status="error")
     finally:
         db.close()

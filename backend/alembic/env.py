@@ -1,16 +1,20 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import app.models  # noqa: F401  (register models)
+from alembic import context
 from app.core.config import settings
 from app.db.base import Base
-import app.models  # noqa: F401  (register models)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Only configure logging when alembic owns the process (CLI). When migrations run inside the app/tests, reusing
+# alembic.ini's config would reset the root level to WARN and disable every existing logger (all app logs gone).
+import logging  # noqa: E402
+
+if config.config_file_name is not None and not logging.getLogger().handlers:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     webhook_max_attempts: int = 5
     outbox_max_attempts: int = 5
     outbox_sending_timeout_seconds: int = 120
+    webhook_event_retention_days: int = 30  # processed inbound payloads (PII) are purged after this
+
+    # Operations: bearer token for /metrics and /readyz?details=1 (required to see them in production).
+    ops_token: str = ""
 
     enable_dev_tools: bool = True
     rate_limit_per_minute: int = 30

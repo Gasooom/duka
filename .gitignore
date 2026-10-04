@@ -8,3 +8,4 @@ node_modules/
 frontend/next-env.d.ts
 *.log
 .DS_Store
+backups/

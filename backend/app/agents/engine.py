@@ -22,7 +22,7 @@ from app.agents.providers import LLMError, LLMProvider, get_llm_provider
 from app.agents.render import render_tool_result
 from app.core.config import settings
 from app.core.errors import DomainError
-from app.core.logging import get_logger, log_event
+from app.core.logging import get_logger, log_event, safe_error
 from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
@@ -253,7 +253,7 @@ class AgentEngine:
                     run.error = "No final response within the tool-iteration limit"
             except Exception as exc:  # LLM outage, bad response... never crash the webhook
                 run.status = "error"
-                run.error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                run.error = safe_error(exc)
                 steps.append({"type": "error", "error": run.error})
                 log_event(logger, "agent.error", 40, operation="agent.run", status="error", error=run.error)
             if checkout_summary is not None:
