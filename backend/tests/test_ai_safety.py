@@ -337,3 +337,15 @@ def test_grounding_unit_cases():
            "Your payment was received.", "It is RWF 1,234,567,890.", "We have 12345 pairs."]
     for text in bad:
         assert verify(text, led), text
+
+
+def test_rejected_reply_still_tells_the_customer_the_real_reason(fashion, outbox, db):
+    """A failed tool's business-rule message (written for customers) is used when the model's reply is rejected;
+    internal errors are not shown."""
+    fashion.send("canvas backpack")
+    model([call("add_to_cart", product_ref="1", quantity=5), call("mark_paid")], "Done! Your order is confirmed and paid.")
+    fashion.send("add 5 of them")
+    r = reply(outbox)
+    assert "Only 3 unit(s) of Canvas Backpack in stock" in r and "paid" not in r.lower()
+    assert "Unknown or disabled tool" not in r
+    assert fashion.get("/api/conversations").json()[0]["status"] == "ai"  # a clear answer is not 'uncertain'

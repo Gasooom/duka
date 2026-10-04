@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 232 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 237 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -86,6 +86,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_human_control.py` | Business hours parsing in the shop's timezone, after-hours expectations for handoffs/voice notes/orders, `open_now` as a tool fact, business-wide AI pause |
 | `test_dashboard_ops.py` | Setup checklist, password change signs out other devices, operator password reset, dev tools hidden in production |
 | `test_reliability.py` | `/healthz`, `/readyz` ok/degraded/down, `/metrics`, ops token, log scrubbing (secrets, SQL parameters, phone numbers, query strings), retention, dead-letter requeue |
+| `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, 40 conversations) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
 
 ---
@@ -93,6 +94,11 @@ on every run, which also proves the migrations work on a clean database. Externa
 Dashboard smoke test in a real browser (needs the Docker stack running and seeded):
 ```bash
 cd scripts/ui-smoke && npm install && npm run setup && npm run smoke
+```
+
+Agent evaluation (versioned cases, reports with transcripts):
+```bash
+cd backend && python -m evals.run --provider rules        # or adversarial; openai_compat with a real key
 ```
 
 ## Onboarding a new business (no code)

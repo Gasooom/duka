@@ -294,7 +294,7 @@ class AgentEngine:
         """Deterministic reply from this turn's tool results (the same renderer the offline engine uses)."""
         parts: dict[str, str] = {}
         for name, args, result in turn_results:
-            if result.get("ok") and name != "handoff_to_human":
+            if name != "handoff_to_human" and (result.get("ok") or result.get("user_facing")):
                 parts[name] = render_tool_result(name, args, result)
         return "\n\n".join(parts.values()) or None
 

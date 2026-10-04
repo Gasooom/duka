@@ -61,6 +61,9 @@ frontend/         Next.js admin dashboard (proxies /api via BACKEND_URL; no secr
 - **New payment provider:** implement `PaymentProvider` (`request_payment`, `get_status`), register in
   `integrations/payments/__init__.py`, add a callback route that re-verifies status.
 - **New LLM vendor:** usually just `LLM_BASE_URL`/`LLM_MODEL` (OpenAI-compatible). Otherwise implement `LLMProvider`.
+- **Agent/prompt/tool change:** run `python -m evals.run --provider rules` and `--provider adversarial` (both are
+  also in `pytest`); add cases to `evals/cases_v1.json` for new behaviour, bump its version and regenerate
+  baselines with `--update-baseline` only for intended changes. Run `--provider openai_compat` when a key is set.
 - **Schema change:** edit models → `alembic revision --autogenerate -m "..."` → review → test from clean DB.
 
 ## Conventions

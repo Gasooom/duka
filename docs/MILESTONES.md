@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4–M8 complete; M3 and M9 ready but blocked on external accounts).
+Last updated: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -393,8 +393,38 @@ Blocked — what you need to provide (then follow `docs/DEPLOYMENT.md`):
    unblocks M4's live verification.
 5. An uptime-monitor account (alerts) and an S3-compatible/B2 bucket (off-site backups).
 
-### M10 — AI evaluation suite · NOT STARTED
-No eval set, no versioning, no prompt-injection or multilingual cases.
+### M10 — AI evaluation suite · COMPLETE (offline + adversarial) · real-model run BLOCKED (LLM credential)
+
+- `backend/evals/cases_v1.json` (suite v1.0.0): **40 representative conversations** across product selection,
+  price, availability, tool usage, order totals, no fabrication, confirmation, handoff, multilingual (EN/RW/FR/SW/
+  mixed) and prompt injection; 29 marked critical. Two stores seeded from the real seed catalogs.
+- `evals/harness.py`: runs each case through the **real pipeline** (signed-webhook payload -> durable inbox ->
+  agent -> tools -> grounding check -> outbox) on a scratch database and checks every turn against system state:
+  tools and arguments, facts that must / must not reach the customer (prices resolved from the DB), number of
+  orders and totals, pending summary, cart, handoff, payment status, DB prices after injection attempts, and
+  whether the model's own reply passed grounding. Wording is free; facts are not.
+- Providers: `rules` (offline engine), **`adversarial`** (a simulated model that lies in every reply — wrong prices,
+  invented iPhones, "paid", "delivered", "order placed", free delivery, 50 % off — while choosing realistic tools),
+  `openai_compat` (the real model, incl. the 7 `requires_llm` cases).
+- Reports record suite version, git SHA, provider/model, a **prompt fingerprint** (system prompt + tool schemas),
+  pass rate per category, critical failures, ungrounded rate, latency, and full transcripts for human review.
+- **Regression gate** (`tests/test_evals.py`, part of `pytest`): fails if any case that passes in the committed
+  baseline (`evals/baselines/{rules,adversarial}.json`) stops passing, or any critical case fails. A meta-test proves
+  the gate works: with the grounding check disabled, the adversarial run produces critical failures and regressions.
+
+Results (offline): rules 33/33 pass (7 skipped: need a real LLM); adversarial 33/33 pass with 51 of 59 model-written
+replies rejected (86 %) — the other 8 are server-rendered checkout summaries; every customer-facing fact was correct.
+
+Fixed during M10 (found by the adversarial run): when a lying reply was rejected and the turn's only tool result
+was a business-rule error ("Only 3 in stock", "Please share your delivery address"), the customer got a generic
+"could you clarify" (and two such turns would hand off). Customer-facing tool errors are now part of the
+deterministic fallback; internal errors are still hidden. Regression test added.
+
+Evidence: `python -m evals.run --provider rules|adversarial` (both exit 0); `pytest -q` -> 237 passed; ruff clean.
+
+Blocked: `python -m evals.run --provider openai_compat --include-llm-cases --out evals/reports/<model>.json`
+needs the LLM key. That run (plus native-speaker review of the Kinyarwanda/French/Swahili transcripts) is what
+measures real model quality and the grounding false-positive rate; keep its report as the real-model baseline.
 
 ### M11 — Real pilot (one Rwandan merchant) · NOT STARTED · BLOCKED on M2–M10 and a merchant
 
@@ -420,7 +450,7 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | PostgreSQL is not publicly exposed | ✅ production compose publishes no DB port (verified in rehearsal); dev compose still does, for local use |
 | Backups exist / restore tested | 🟡 scripts + verified restore locally (M8); server cron + off-site copy pending (M9) / ✅ restore verified (M8) |
 | Monitoring exists | 🟡 /readyz, /metrics, scrubbed JSON logs (M8); external monitor needs an account (M9) |
-| AI evaluation exists | ❌ |
+| AI evaluation exists | ✅ M10 (40 cases, rules + adversarial gate in pytest); real-model run blocked on key |
 | Critical failure scenarios handled | 🟡 LLM/tool failures, crashes, redeliveries, send failures (M4), order safety (M5); real-LLM output checks pending (M3) |
 | One real merchant used it / real traffic tested | ❌ |
 | No critical data leakage | 🟡 none found; not yet proven exhaustively |

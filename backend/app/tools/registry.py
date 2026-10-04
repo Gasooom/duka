@@ -80,7 +80,9 @@ def execute_tool(ctx: ToolContext, name: str, raw_args: dict[str, Any] | None) -
         result = {"ok": True, **data}
     except DomainError as exc:
         nested.rollback()
-        result = {"ok": False, "error": exc.message}
+        # Business-rule errors ("Only 3 in stock", "Please share your address") are written for customers and
+        # may be shown verbatim; internal ones (unknown tool, invalid arguments, crashes) are not.
+        result = {"ok": False, "error": exc.message, "user_facing": True}
     except Exception as exc:  # never let a tool crash the conversation
         nested.rollback()
         log_event(logger, "tool.crash", 40, operation=f"tool.{name}", status="error", error=repr(exc)[:300])
