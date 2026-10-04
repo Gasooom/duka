@@ -26,6 +26,7 @@ class SendResult:
     wa_message_id: str | None
     delivery_status: str  # sent | simulated | failed
     error: str | None = None
+    retryable: bool = False  # transient failure (429/5xx/network): the outbox may try again later
 
 
 class WhatsAppAdapter(ABC):
@@ -56,6 +57,7 @@ class CloudWhatsAppAdapter(WhatsAppAdapter):
         payload = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "text",
                    "text": {"preview_url": False, "body": body[:WHATSAPP_TEXT_LIMIT]}}
         last_error = None
+        retryable = False
         for attempt in range(1, self.max_attempts + 1):
             try:
                 r = self.client.post(self.url, json=payload, headers={"Authorization": f"Bearer {self.token}"})
@@ -63,14 +65,17 @@ class CloudWhatsAppAdapter(WhatsAppAdapter):
                     wamid = (r.json().get("messages") or [{}])[0].get("id")
                     return SendResult(ok=True, wa_message_id=wamid, delivery_status="sent")
                 last_error = f"HTTP {r.status_code}: {r.text[:300]}"
-                if r.status_code not in (429, 500, 502, 503, 504):
+                retryable = r.status_code in (429, 500, 502, 503, 504)
+                if not retryable:
                     break  # permanent error (bad token, invalid recipient...) -> don't retry
             except httpx.TransportError as exc:  # timeouts, connection errors
                 last_error = f"{type(exc).__name__}: {exc}"
+                retryable = True
             if attempt < self.max_attempts:
                 time.sleep(0.4 * (2 ** (attempt - 1)))
         log_event(logger, "whatsapp.send_failed", operation="whatsapp.send", status="error", error=last_error)
-        return SendResult(ok=False, wa_message_id=None, delivery_status="failed", error=last_error)
+        return SendResult(ok=False, wa_message_id=None, delivery_status="failed", error=last_error,
+                          retryable=retryable)
 
 
 class _MisconfiguredAdapter(WhatsAppAdapter):

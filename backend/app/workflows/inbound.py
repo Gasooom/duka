@@ -1,31 +1,44 @@
-"""WhatsApp inbound pipeline:
+"""WhatsApp inbound pipeline, durable:
 
-  webhook payload -> parse -> resolve tenant by phone_number_id -> upsert customer ->
-  conversation -> idempotent message insert -> (human mode? stop) -> agent -> send reply
+  POST /webhooks/whatsapp -> verify signature -> ingest(): one webhook_events row per message, keyed by
+  (business, wamid), committed BEFORE the 200 (a DB failure returns 5xx so Meta retries)
+  -> worker claims events (FOR UPDATE SKIP LOCKED, oldest first, one at a time per sender, under a lease)
+  -> process_message(): customer -> conversation -> idempotent message insert -> agent -> reply queued in the
+     outbox, all in ONE transaction that also marks the event done
+  -> after commit: the reply is sent (services/messaging_service.py).
 
-Each message is processed in its own transaction so one failure never affects others,
-and the webhook endpoint itself never raises because of an agent/LLM failure."""
+Crash before commit: nothing is persisted except the event, whose lease expires and which is processed again.
+Failure: the event goes to 'retry' with backoff, then 'dead' after WEBHOOK_MAX_ATTEMPTS (logged at ERROR).
+Webhooks never crash on LLM/tool failure: the agent returns the tenant fallback message instead."""
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.agents.engine import AgentEngine
+from app.core.config import settings
+from app.core.errors import ValidationError
 from app.core.logging import bind_context, clear_context, get_logger, log_event, log_operation
 from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
-from app.integrations.whatsapp.parser import InboundMessage, parse_webhook
-from app.models import Business, Message, WhatsAppAccount
-from app.services.conversation_service import ConversationService, CustomerService
-from app.services.messaging_service import send_to_customer
+from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
+from app.models import Business, Message, WebhookEvent, WhatsAppAccount
+from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
+from app.services.messaging_service import OUTBOX_KEY, deliver, send_to_customer
 
 logger = get_logger(__name__)
+RETRY_DELAYS_SECONDS = (2, 10, 30, 120)
+# Meta status webhooks can arrive out of order; never move a message backwards (read -> delivered).
+_STATUS_RANK = {"queued": 0, "sending": 1, "retry": 1, "sent": 2, "simulated": 2, "delivered": 3, "read": 4}
 
 
 @dataclass
 class ProcessResult:
-    status: str  # replied | duplicate | unknown_tenant | human_mode | rate_limited | unsupported | error
+    # replied | duplicate | unknown_tenant | human_mode | rate_limited | unsupported | queued | error
+    status: str
     business_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
     reply: str | None = None
@@ -33,17 +46,174 @@ class ProcessResult:
     replies: list[str] = field(default_factory=list)
 
 
+@dataclass
+class IngestResult:
+    # one entry per inbound message in the payload: (message, event id or None, outcome)
+    # outcome: accepted | duplicate | unknown_tenant | invalid
+    items: list[tuple[InboundMessage, uuid.UUID | None, str]] = field(default_factory=list)
+
+    @property
+    def event_ids(self) -> list[uuid.UUID]:
+        return [eid for _, eid, outcome in self.items if outcome == "accepted"]
+
+
 def resolve_account(db: Session, phone_number_id: str) -> WhatsAppAccount | None:
     return db.scalar(select(WhatsAppAccount).where(WhatsAppAccount.phone_number_id == phone_number_id,
                                                    WhatsAppAccount.is_active.is_(True)))
 
 
+# ---------------------------------------------------------------- ingest (inside the webhook request)
+def ingest(db: Session, payload: dict) -> IngestResult:
+    """Persist every message of a webhook payload as a webhook_events row (idempotent) and apply status
+    updates. The caller commits; only then may the webhook be acknowledged."""
+    messages, statuses = parse_webhook(payload)
+    out = IngestResult()
+    for msg in messages:
+        account = resolve_account(db, msg.phone_number_id)
+        business = db.get(Business, account.business_id) if account else None
+        if business is None or not business.is_active:
+            # Never process (or store) a message without a tenant.
+            log_event(logger, "inbound.unknown_tenant", 30, operation="inbound.ingest", status="dropped",
+                      phone_number_id=msg.phone_number_id)
+            out.items.append((msg, None, "unknown_tenant"))
+            continue
+        try:
+            sender = normalize_phone(msg.from_number)
+        except ValidationError:
+            sender = ""
+        if not sender or not msg.wa_message_id:
+            log_event(logger, "inbound.invalid", 30, operation="inbound.ingest", status="dropped",
+                      business_id=str(business.id))
+            out.items.append((msg, None, "invalid"))
+            continue
+        event_id = db.execute(
+            pg_insert(WebhookEvent).values(
+                id=uuid.uuid4(), business_id=business.id, provider="whatsapp", external_id=msg.wa_message_id,
+                sender=sender, payload=msg.to_payload(), status="pending", attempts=0)
+            .on_conflict_do_nothing(constraint="uq_webhook_events_external").returning(WebhookEvent.id)).scalar()
+        out.items.append((msg, event_id, "accepted" if event_id else "duplicate"))
+        if event_id is None:
+            log_event(logger, "inbound.duplicate", operation="inbound.ingest", status="duplicate",
+                      business_id=str(business.id))
+    _apply_statuses(db, statuses)
+    return out
+
+
+def ingest_and_commit(payload: dict, session_factory=SessionLocal) -> IngestResult:
+    db = session_factory()
+    try:
+        result = ingest(db, payload)
+        db.commit()
+        return result
+    finally:
+        db.close()
+
+
+def _apply_statuses(db: Session, statuses: list[StatusUpdate]) -> None:
+    for s in statuses:
+        account = resolve_account(db, s.phone_number_id)
+        if not account:
+            continue
+        # Scoped by the receiving number's tenant: a status can only touch that tenant's messages.
+        msg = db.scalar(select(Message).where(Message.business_id == account.business_id,
+                                              Message.wa_message_id == s.wa_message_id))
+        if msg is None or msg.delivery_status == s.status:
+            continue
+        if s.status == "failed" or _STATUS_RANK.get(s.status, -1) > _STATUS_RANK.get(msg.delivery_status or "", -1):
+            msg.delivery_status = s.status
+
+
+# ---------------------------------------------------------------- claim + process (worker)
+_CLAIM_SQL = text("""
+UPDATE webhook_events
+   SET status = 'processing', attempts = attempts + 1, updated_at = now(),
+       locked_until = now() + make_interval(secs => :lease)
+ WHERE id = (
+       SELECT e.id FROM webhook_events e
+        WHERE ((e.status IN ('pending', 'retry') AND e.next_attempt_at <= now())
+               OR (e.status = 'processing' AND e.locked_until < now()))
+          AND (CAST(:only_id AS uuid) IS NULL OR e.id = CAST(:only_id AS uuid))
+          -- per-sender FIFO: never overtake an unfinished earlier message from the same customer
+          AND NOT EXISTS (SELECT 1 FROM webhook_events p
+                           WHERE p.business_id = e.business_id AND p.sender = e.sender AND p.seq < e.seq
+                             AND p.status IN ('pending', 'retry', 'processing'))
+        ORDER BY e.seq
+        LIMIT 1
+          FOR UPDATE SKIP LOCKED)
+RETURNING id, attempts
+""")
+
+
+def claim(session_factory=SessionLocal, only_id: uuid.UUID | None = None) -> tuple[uuid.UUID, int] | None:
+    with session_factory() as db:
+        row = db.execute(_CLAIM_SQL, {"lease": settings.webhook_lease_seconds,
+                                      "only_id": str(only_id) if only_id else None}).first()
+        db.commit()
+        return (row[0], row[1]) if row else None
+
+
+def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLocal) -> ProcessResult:
+    if attempts > settings.webhook_max_attempts:  # e.g. a message that kills the process every time
+        _record_failure(session_factory, event_id, attempts, "Exceeded max attempts (lease expired repeatedly)")
+        return ProcessResult(status="error")
+    db = session_factory()
+    outbox: list[uuid.UUID] = []
+    try:
+        event = db.get(WebhookEvent, event_id)
+        msg = InboundMessage.from_payload(event.payload)
+        with log_operation(logger, "inbound.process", attempt=attempts) as ctx:
+            result = process_message(db, msg)
+            ctx["result"] = result.status
+        event.status, event.result = "done", result.status
+        event.processed_at, event.locked_until, event.last_error = datetime.now(timezone.utc), None, None
+        outbox = db.info.pop(OUTBOX_KEY, [])
+        db.commit()  # inbound message, agent run, cart/order changes, queued reply and 'done' — atomically
+    except Exception as exc:
+        db.rollback()
+        db.info.pop(OUTBOX_KEY, None)
+        _record_failure(session_factory, event_id, attempts, f"{type(exc).__name__}: {exc}")
+        return ProcessResult(status="error")
+    finally:
+        db.close()
+        clear_context()
+    deliver(outbox, session_factory)
+    return result
+
+
+def _record_failure(session_factory, event_id: uuid.UUID, attempts: int, error: str) -> None:
+    with session_factory() as db:
+        event = db.get(WebhookEvent, event_id)
+        if event is None or event.status == "done":
+            return
+        event.last_error = error[:1000]
+        event.locked_until = None
+        if attempts >= settings.webhook_max_attempts:
+            event.status = "dead"
+            log_event(logger, "webhook.dead", 40, operation="inbound.process", status="dead",
+                      business_id=str(event.business_id), attempts=attempts, error=error[:300])
+        else:
+            event.status = "retry"
+            delay = RETRY_DELAYS_SECONDS[min(attempts - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+            event.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            log_event(logger, "webhook.retry", 30, operation="inbound.process", status="retry",
+                      business_id=str(event.business_id), attempts=attempts, error=error[:300])
+        db.commit()
+
+
+def run_due(session_factory=SessionLocal, limit: int | None = None) -> list[ProcessResult]:
+    """Process due events until none is claimable (or `limit` reached)."""
+    results = []
+    while limit is None or len(results) < limit:
+        claimed = claim(session_factory)
+        if claimed is None:
+            break
+        results.append(process_event(*claimed, session_factory=session_factory))
+    return results
+
+
 def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
     account = resolve_account(db, msg.phone_number_id)
     if account is None:
-        # Never process a message without a tenant.
-        log_event(logger, "inbound.unknown_tenant", 30, operation="inbound", status="dropped",
-                  phone_number_id=msg.phone_number_id)
         return ProcessResult(status="unknown_tenant")
     business = db.get(Business, account.business_id)
     if business is None or not business.is_active:
@@ -54,8 +224,8 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
     convs = ConversationService(db, business.id)
     conv = convs.get_or_create_active(customer)
     bind_context(customer_id=customer.id, conversation_id=conv.id)
-    text = (msg.text or "").strip()
-    inbound = convs.record_inbound(conv, text=text or f"[{msg.type} message]", wa_message_id=msg.wa_message_id,
+    text_ = (msg.text or "").strip()
+    inbound = convs.record_inbound(conv, text=text_ or f"[{msg.type} message]", wa_message_id=msg.wa_message_id,
                                    metadata={"type": msg.type})
     if inbound is None:
         log_event(logger, "inbound.duplicate", operation="inbound", status="duplicate")
@@ -70,53 +240,28 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
     if not inbound_message_limiter.allow(f"{business.id}:{customer.whatsapp_number}"):
         return ProcessResult(status="rate_limited", business_id=business.id, conversation_id=conv.id)
 
-    if not text:
+    if not text_:
         reply = "Sorry, I can only read text messages for now. Please type your request."
-        send_to_customer(db, business.id, conv, reply, account=account)
+        send_to_customer(db, business.id, conv, reply)
         return ProcessResult(status="unsupported", business_id=business.id, conversation_id=conv.id, reply=reply)
 
     outcome = AgentEngine(db, business).run(customer, conv, inbound)
-    send_to_customer(db, business.id, conv, outcome.text, agent_run_id=outcome.run.id, account=account)
+    send_to_customer(db, business.id, conv, outcome.text, agent_run_id=outcome.run.id)
     return ProcessResult(status="replied", business_id=business.id, conversation_id=conv.id, reply=outcome.text,
                          agent_run_id=outcome.run.id)
 
 
 def process_webhook_payload(payload: dict, session_factory=SessionLocal) -> list[ProcessResult]:
-    messages, statuses = parse_webhook(payload)
+    """Ingest a payload and process its events right away (dev simulator, tests). Production goes through
+    ingest_and_commit() in the webhook + the worker; both share every step after ingest."""
+    ingested = ingest_and_commit(payload, session_factory)
     results: list[ProcessResult] = []
-    for msg in messages:
-        db = session_factory()
-        try:
-            with log_operation(logger, "inbound.process", wa_message_id=msg.wa_message_id) as ctx:
-                result = process_message(db, msg)
-                db.commit()
-                ctx["result"] = result.status
-            results.append(result)
-        except Exception as exc:
-            db.rollback()
-            log_event(logger, "inbound.failed", 40, operation="inbound.process", status="error", error=repr(exc)[:300])
-            results.append(ProcessResult(status="error"))
-        finally:
-            db.close()
-            clear_context()
-    if statuses:
-        _apply_statuses(statuses, session_factory)
+    for _, event_id, outcome in ingested.items:
+        if outcome != "accepted":
+            results.append(ProcessResult(status=outcome))
+            continue
+        claimed = claim(session_factory, only_id=event_id)
+        # Not claimable now (an earlier message from this customer is still pending): the worker will do it.
+        results.append(process_event(*claimed, session_factory=session_factory) if claimed
+                       else ProcessResult(status="queued"))
     return results
-
-
-def _apply_statuses(statuses, session_factory) -> None:
-    db = session_factory()
-    try:
-        for s in statuses:
-            account = resolve_account(db, s.phone_number_id)
-            if not account:
-                continue
-            msg = db.scalar(select(Message).where(Message.business_id == account.business_id,
-                                                  Message.wa_message_id == s.wa_message_id))
-            if msg:
-                msg.delivery_status = s.status
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()

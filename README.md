@@ -6,7 +6,8 @@ provider. No chatbot code is written per business. `Kigali Fashion` and `Mama's 
 
 ```
  WhatsApp Cloud API ──► POST /webhooks/whatsapp ── verify X-Hub-Signature-256
-                              │  (200 right away, then processed in the background)
+                              │  persist to webhook_events, commit, then 200 (5xx -> Meta redelivers)
+                              │  worker threads claim events (SKIP LOCKED, per-customer FIFO, lease, retry)
                               ▼
             phone_number_id ─► whatsapp_accounts ─► business_id (tenant)   ✗ unknown → dropped
                               ▼
@@ -22,12 +23,13 @@ provider. No chatbot code is written per business. `Kigali Fashion` and `Mama's 
                                   ▼
           tenant-scoped repositories ─► PostgreSQL + pgvector (one shared DB)
                                   │
-  reply ─► WhatsApp adapter (cloud | dev) ─► message stored with delivery status
+  reply queued in the same transaction (outbox) ─► sent after commit ─► WhatsApp adapter (cloud | dev)
   PaymentProvider (mock | MTN MoMo) ─► callback ─► re-verify ─► order=paid ─► WhatsApp confirmation
 ```
 
 It's a modular monolith: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL 16 + pgvector, and a Next.js 15 dashboard.
-There's no Redis, queue, vector DB or microservice, so you pay for one Postgres and one small container.
+There's no Redis, queue, vector DB or microservice, so you pay for one Postgres and one small container: the
+inbound queue (`webhook_events`) and the outbound outbox are Postgres tables worked by in-process threads.
 
 ---
 
@@ -60,7 +62,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 78 tests. They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 96 tests. They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -73,7 +75,8 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_payments.py` | No auto-confirmation, idempotent initiate + callbacks, HMAC callbacks, failures/retry, MoMo protocol, MoMo callbacks re-verified against the API |
 | `test_whatsapp.py` | Verify handshake, signature check, duplicate delivery, unknown tenant, non-text, handoff stops the AI, encrypted tokens, Cloud adapter retries, message ordering |
 | `test_agent.py` | OpenAI-compatible tool loop, token/latency capture, invalid/unknown tool calls contained, iteration cap, LLM outage → fallback, greeting fast path, bounded context, summaries |
-| `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit |
+| `test_durability.py` | Persist-before-ack, crash recovery (lease), redeliveries have one effect, rollback means no reply, retries/dead-letter, per-customer ordering, outbox retry/failure, background threads |
+| `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
 
 ---
 
@@ -117,9 +120,12 @@ Everything below works in dev mode without credentials. The real integrations ar
 - **Payments are confirmed by the provider only.** The mock provider never auto-confirms; it needs an HMAC-signed
   callback. MoMo callbacks aren't signed, so they're treated as a hint and the status is always re-queried from the
   MoMo API. Admins and the agent can't set `paid`.
-- **Reliability.** Webhooks return 200 right away. Each message is processed in its own transaction. Duplicate
-  `wamid`s are ignored, and conversation rows are locked so a customer's messages are handled in order. External
-  calls have retries with backoff on 429/5xx/timeouts, but never on 4xx. If the LLM fails, the customer gets the
+- **Reliability.** A webhook is acknowledged only after its messages are committed to `webhook_events`; a crash
+  after that loses nothing (the worker lease expires and another worker takes over). Each message is processed in
+  one transaction together with its reply, which is sent only after commit (outbox), so a customer never hears
+  about an order that was rolled back. Duplicate `wamid`s are ignored at ingest and at insert, a customer's
+  messages are processed strictly in order, failures retry with backoff and are dead-lettered after
+  `WEBHOOK_MAX_ATTEMPTS`. Sends retry on 429/5xx/timeouts, never on 4xx. If the LLM fails, the customer gets the
   tenant's fallback message.
 - **Observability.** Logs are JSON with `request_id, business_id, customer_id, conversation_id, operation, status,
   duration_ms`, and secrets are redacted. `agent_runs` stores every decision, tool, argument, result, error,

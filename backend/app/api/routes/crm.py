@@ -6,7 +6,7 @@ from app.api.deps import TenantContext, get_tenant
 from app.schemas.api import AgentRunOut, CustomerOut, HumanReplyIn, MessageOut, OrderOut
 from app.services.commerce_service import OrderService
 from app.services.conversation_service import ConversationService, CustomerService
-from app.services.messaging_service import send_to_customer
+from app.services.messaging_service import commit_and_deliver, send_to_customer
 
 router = APIRouter(prefix="/api", tags=["customers", "conversations"])
 
@@ -68,7 +68,8 @@ def human_reply(conversation_id: uuid.UUID, body: HumanReplyIn, ctx: TenantConte
     msg = send_to_customer(ctx.db, ctx.business_id, conv, body.text, role="human_agent",
                            metadata={"user_id": str(ctx.user.id)})
     conv.needs_attention = False
-    ctx.db.commit()
+    commit_and_deliver(ctx.db)
+    ctx.db.refresh(msg)  # final delivery status (sent / failed / retry)
     return MessageOut.of(msg)
 
 

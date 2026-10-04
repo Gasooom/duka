@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2 complete).
+Last updated: 2026-10-04 (M2, M4 complete).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -99,20 +99,53 @@ Gaps:
 - Multilingual: zero tests. Live (rules): Kinyarwanda → "couldn't find anything"; French → wrong products.
 - Customer WhatsApp number is sent to the LLM vendor in the context snapshot (unnecessary PII).
 
-### M4 — Real WhatsApp · IN PROGRESS · live verification BLOCKED (Meta app, number, token, public HTTPS URL)
-Done: GET verify handshake, `X-Hub-Signature-256` check (required in production), unknown tenant dropped,
-duplicate `wamid` de-duplicated, per-message transactions, Cloud adapter with retry on 429/5xx only,
-encrypted tokens, delivery-status updates.
+### M4 — Durable WhatsApp processing · COMPLETE (code) · live Meta verification BLOCKED (Meta app, number, token, public HTTPS URL)
 
-Gaps:
-- No durable event store: the payload is processed in FastAPI `BackgroundTasks` after the 200. A restart or
-  crash between ack and processing loses the message; Meta will not redeliver.
-- Outbound is sent before the transaction commits. If the commit then fails, the customer got a reply but
-  the inbound message, reply record and any cart/order changes are rolled back.
-- No retry path for failed processing or failed sends; failures are only logged.
-- No outbound idempotency key.
-- Voice/image/other media get "I can only read text" instead of reaching a human.
-- 24-hour window / template messages not handled (owner replies after 24 h will fail at Meta).
+Architecture (PostgreSQL only — no Redis/queue added):
+- `POST /webhooks/whatsapp` verifies the signature, then writes one `webhook_events` row per message
+  (unique on business + wamid, tenant resolved from `phone_number_id`) and **commits before returning 200**.
+  If persisting fails the endpoint returns 5xx so Meta redelivers. `BackgroundTasks` is no longer used.
+- In-process worker threads (`BACKGROUND_WORKERS`, default 2) claim events with `FOR UPDATE SKIP LOCKED`
+  (safe across threads and instances), oldest first, **one at a time per customer** (a later message never
+  overtakes an unfinished earlier one), under a lease (`WEBHOOK_LEASE_SECONDS`) so a crashed worker's event is
+  reclaimed. Failures go to `retry` with backoff (2s, 10s, 30s, 120s), then `dead` after `WEBHOOK_MAX_ATTEMPTS`
+  (logged at ERROR; later messages from that customer are then unblocked).
+- One transaction per event: customer, conversation, inbound message, agent run, cart/order changes, the
+  **queued reply** and `status=done`. **Replies are sent only after that commit** (transactional outbox in
+  `messages`: queued -> sending -> sent/simulated, or retry -> failed). Human replies and payment notifications
+  use the same outbox. A transient send failure (429/5xx/network) is retried by the worker with backoff; a
+  permanent one is marked failed and flags the conversation. A send interrupted mid-request (outcome unknown) is
+  flagged, not blindly re-sent (WhatsApp has no idempotency key).
+- At most one open conversation and one active cart per customer (partial unique indexes + race-safe inserts).
+- Status webhooks never move a message backwards (read stays read).
+
+Evidence:
+- `tests/test_durability.py` (17 tests): persisted-before-ack + recovery after a crash; ingest failure -> 500 ->
+  redelivery works; failure after the agent created an order -> order, message and reply all rolled back, retried
+  once -> exactly one order and one reply; commit failure -> nothing sent; expired lease reclaimed; 6 concurrent +
+  2 later redeliveries of one wamid -> one event, one message, one customer, one conversation, one reply; retry ->
+  dead-letter with per-customer ordering; parallel senders vs serialized same sender; transient/permanent send
+  failures; committed-but-unsent reply delivered by the worker exactly once; interrupted send not re-sent;
+  6 concurrent first contacts -> one customer/conversation/cart; real background threads process a webhook;
+  monotonic statuses; human reply reports real delivery status; a rolled-back queued message is never sent.
+- **Live cross-process crash test** on the Docker stack: an ingest-only backend (`BACKGROUND_WORKERS=0`)
+  acknowledged a webhook and was `SIGKILL`ed; the event was `pending` in Postgres; the restarted main backend's
+  workers processed it (`done`, 1 attempt, `replied`) and recorded the reply.
+
+Fixed during M4:
+- **Security: `.env.example` inline comments became secret values under docker compose.**
+  `WHATSAPP_APP_SECRET=   # (CREDENTIAL)...` was parsed as the value `"# (CREDENTIAL)..."` — a publicly known HMAC
+  secret if left blank on a deployment (also `MOMO_CALLBACK_HOST` and others). Comments moved to their own lines,
+  and the app now refuses to start if any setting's value starts with `#` (regression test).
+
+Remaining risks / not in scope:
+- Not yet exercised against Meta (needs the Meta app, number, permanent token and a public HTTPS URL).
+- The real MoMo `request_payment` call (not enabled) would run inside the processing transaction; before
+  enabling MoMo it must move behind the outbox pattern too.
+- `webhook_events.payload` holds message text (PII); a retention/purge job is planned in M8.
+- 24-hour customer-service window / template messages are not handled (owner replies after 24 h fail at Meta;
+  they show as `failed` and flag the conversation).
+- Voice/media still get the "text only" reply (M6 routes them to a human).
 
 ### M5 — Real commerce · IN PROGRESS
 Done: DB-priced cart, delivery zones, stock check + row locks on checkout, order item price snapshots,
@@ -193,7 +226,7 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Backups exist / restore tested | ❌ / ❌ |
 | Monitoring exists | ❌ |
 | AI evaluation exists | ❌ |
-| Critical failure scenarios handled | 🟡 LLM/tool failures yes; event durability no |
+| Critical failure scenarios handled | 🟡 LLM/tool failures, crashes, redeliveries, send failures (M4); order safety pending (M5) |
 | One real merchant used it / real traffic tested | ❌ |
 | No critical data leakage | 🟡 none found; not yet proven exhaustively |
 | 2–5 stores operate safely | ❌ |

@@ -11,6 +11,7 @@ os.environ["PAYMENT_WEBHOOK_SECRET"] = "test-payment-secret"
 os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
 os.environ["WHATSAPP_APP_SECRET"] = ""
 os.environ["JWT_SECRET"] = "test-jwt-secret-0123456789abcdef"
+os.environ["BACKGROUND_WORKERS"] = "0"  # tests drain the queue explicitly (see Tenant.send / drain())
 
 import hashlib  # noqa: E402
 import hmac  # noqa: E402
@@ -31,6 +32,7 @@ from app.db.session import SessionLocal, engine  # noqa: E402
 from app.integrations.whatsapp.adapters import SendResult, WhatsAppAdapter, set_adapter_override  # noqa: E402
 from app.integrations.whatsapp.parser import build_text_webhook  # noqa: E402
 from app.main import app  # noqa: E402
+from app.workflows.inbound import run_due  # noqa: E402
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -70,6 +72,11 @@ def db():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def drain() -> list:
+    """Do what the background workers do in production: process every due webhook event."""
+    return run_due(SessionLocal)
 
 
 class CapturingAdapter(WhatsAppAdapter):
@@ -127,14 +134,18 @@ class Tenant:
         assert r.status_code == 201, r.text
         return r.json()
 
-    def send(self, text_: str, from_number="250788111222", wa_id=None, sign_secret: str | None = None):
+    def send(self, text_: str, from_number="250788111222", wa_id=None, sign_secret: str | None = None,
+             process: bool = True):
         payload = build_text_webhook(self.phone_number_id, "+250700", from_number, text_,
                                      wa_id or f"wamid.{uuid.uuid4().hex}", "Test Customer")
         raw = json.dumps(payload).encode()
         headers = {"Content-Type": "application/json"}
         if sign_secret:
             headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(sign_secret.encode(), raw, hashlib.sha256).hexdigest()
-        return self.client.post("/webhooks/whatsapp", content=raw, headers=headers)
+        r = self.client.post("/webhooks/whatsapp", content=raw, headers=headers)
+        if process:
+            drain()
+        return r
 
 
 FASHION_CSV = (BACKEND / "seed/data/kigali_fashion_products.csv").read_text()

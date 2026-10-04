@@ -7,6 +7,7 @@ from app.core.security import decrypt_secret
 from app.integrations.whatsapp.adapters import CloudWhatsAppAdapter
 from app.integrations.whatsapp.parser import parse_webhook
 from app.models import Message, WhatsAppAccount
+from tests.conftest import drain
 
 
 def test_webhook_verification(client):
@@ -59,6 +60,7 @@ def test_non_text_message_gets_polite_reply(fashion, outbox, client):
         "metadata": {"phone_number_id": fashion.phone_number_id},
         "messages": [{"from": "250788111222", "id": "wimg", "type": "image", "image": {"id": "x"}}]}}]}]}
     client.post("/webhooks/whatsapp", json=payload)
+    drain()
     assert "only read text" in outbox.sent[0][1]
 
 

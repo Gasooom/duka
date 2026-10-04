@@ -1,6 +1,7 @@
 """Application configuration. All secrets come from environment variables."""
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +58,14 @@ class Settings(BaseSettings):
     momo_callback_host: str = ""
     momo_currency_override: str = ""  # sandbox only accepts EUR
 
+    # Durable inbound processing (webhook_events) and outbound delivery (outbox) workers.
+    background_workers: int = 2           # worker threads per process; 0 disables (tests drain explicitly)
+    worker_poll_seconds: float = 2.0
+    webhook_lease_seconds: int = 300      # a crashed worker's event is reclaimed after this
+    webhook_max_attempts: int = 5
+    outbox_max_attempts: int = 5
+    outbox_sending_timeout_seconds: int = 120
+
     enable_dev_tools: bool = True
     rate_limit_per_minute: int = 30
     # Self-service business registration. Always closed in production: pilot tenants are created
@@ -66,6 +75,15 @@ class Settings(BaseSettings):
     @property
     def registration_open(self) -> bool:
         return self.allow_public_registration and not self.is_production
+
+    @model_validator(mode="after")
+    def _reject_comment_values(self) -> "Settings":
+        # docker compose's env_file turns `KEY=   # comment` into the value "# comment". For a secret such as
+        # WHATSAPP_APP_SECRET that would silently become a publicly known string, so refuse to start.
+        bad = [k.upper() for k, v in self.__dict__.items() if isinstance(v, str) and v.lstrip().startswith("#")]
+        if bad:
+            raise ValueError(f"{', '.join(bad)}: value starts with '#'. Put .env comments on their own line.")
+        return self
 
     @property
     def is_production(self) -> bool:

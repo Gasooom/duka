@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -61,9 +61,16 @@ class ConversationService:
         self.runs = AgentRunRepo(db, business_id)
 
     def get_or_create_active(self, customer: Customer) -> Conversation:
-        conv = self.repo.first(Conversation.customer_id == customer.id, Conversation.status != "closed")
+        where = (Conversation.customer_id == customer.id, Conversation.status != "closed")
+        conv = self.repo.first(*where)
         if conv is None:
-            conv = self.repo.add(customer_id=customer.id, status="ai", state={})
+            # Race-safe: the partial unique index uq_conversations_open allows one open conversation per customer.
+            self.db.execute(pg_insert(Conversation).values(
+                id=uuid.uuid4(), business_id=self.business_id, customer_id=customer.id, status="ai",
+                needs_attention=False, summarized_message_count=0, state={},
+            ).on_conflict_do_nothing(index_elements=["business_id", "customer_id"],
+                                     index_where=text("status <> 'closed'")))
+            conv = self.repo.first(*where)
         return conv
 
     def get(self, conversation_id: uuid.UUID, *, for_update: bool = False) -> Conversation:

@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.core.errors import DomainError
 from app.core.logging import clear_context, configure_logging, get_logger, log_event, request_id_var
 from app.db.session import engine
+from app.workflows.worker import workers
 
 configure_logging(settings.log_level)
 logger = get_logger("app")
@@ -18,7 +20,16 @@ logger = get_logger("app")
 if settings.is_production and settings.jwt_secret in ("", "change-me-in-env"):
     raise RuntimeError("JWT_SECRET must be set in production")
 
-app = FastAPI(title=settings.app_name, version="0.1.0",
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    workers.start(settings.background_workers)
+    yield
+    workers.stop()
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan,
               description="Multi-tenant WhatsApp AI commerce platform. See /docs for the API contract.")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
@@ -60,4 +71,5 @@ def health():
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
     return {"status": "ok", "llm_provider": settings.llm_provider, "embedding_provider": settings.embedding_provider,
-            "whatsapp_force_dev": settings.whatsapp_force_dev}
+            "whatsapp_force_dev": settings.whatsapp_force_dev,
+            "workers": workers.running or settings.background_workers == 0}

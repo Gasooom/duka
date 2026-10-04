@@ -2,7 +2,7 @@
 
 Payload reference: https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/payload-examples
 """
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -16,6 +16,14 @@ class InboundMessage:
     profile_name: str | None = None
     timestamp: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> dict[str, Any]:
+        """JSON form stored in webhook_events.payload."""
+        return asdict(self)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "InboundMessage":
+        return cls(**payload)
 
 
 @dataclass

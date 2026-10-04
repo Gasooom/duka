@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.schemas.api import CustomerOut, OrderOut, OrderStatusIn, PaymentOut, SimulatePaymentIn
 from app.services.commerce_service import OrderService
 from app.services.conversation_service import CustomerService
+from app.services.messaging_service import commit_and_deliver
 from app.services.payment_service import PaymentService
 from app.workflows.payments import confirm_payment, refresh_and_notify
 
@@ -44,7 +45,7 @@ def refresh_payment(payment_id: uuid.UUID, ctx: TenantContext = Depends(get_tena
     """Poll the provider for the real status (useful if a callback was missed)."""
     payment = PaymentService(ctx.db, ctx.business_id).payments.get_or_404(payment_id)
     changed = refresh_and_notify(ctx.db, payment)
-    ctx.db.commit()
+    commit_and_deliver(ctx.db)
     return {"changed": changed, "status": payment.status}
 
 
@@ -58,5 +59,5 @@ def simulate_payment(payment_id: uuid.UUID, body: SimulatePaymentIn, ctx: Tenant
         raise HTTPException(400, "Only mock payments can be simulated")
     changed = confirm_payment(ctx.db, payment, body.status, {"simulated_by": str(ctx.user.id)},
                               None if body.status == "successful" else "Simulated failure")
-    ctx.db.commit()
+    commit_and_deliver(ctx.db)
     return {"changed": changed, "status": payment.status}

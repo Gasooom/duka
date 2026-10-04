@@ -59,3 +59,12 @@ def test_inbound_rate_limit_per_customer(fashion, outbox):
         assert len(outbox.sent) == 3
     finally:
         inbound_message_limiter.limit = 30
+
+
+def test_settings_reject_env_values_that_are_really_comments():
+    """docker compose env_file parses `WHATSAPP_APP_SECRET=   # comment` as the value '# comment'."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+    with pytest.raises(ValidationError, match="WHATSAPP_APP_SECRET"):
+        Settings(whatsapp_app_secret="# (CREDENTIAL) Meta App > Settings > Basic > App secret")

@@ -1,16 +1,19 @@
 """Public webhooks: WhatsApp Cloud API and payment providers."""
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger, log_event
 from app.core.security import hmac_sha256, verify_meta_signature
 from app.db.session import get_db
-from app.workflows.inbound import process_webhook_payload
+from app.services.messaging_service import commit_and_deliver
+from app.workflows.inbound import ingest_and_commit
 from app.workflows.payments import confirm_payment, find_payment_by_id, find_payment_by_reference, refresh_and_notify
+from app.workflows.worker import workers
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = get_logger(__name__)
@@ -27,7 +30,7 @@ def verify_whatsapp(mode: str | None = Query(None, alias="hub.mode"),
 
 
 @router.post("/whatsapp")
-async def receive_whatsapp(request: Request, background: BackgroundTasks):
+async def receive_whatsapp(request: Request):
     raw = await request.body()
     if settings.whatsapp_app_secret:
         if not verify_meta_signature(raw, request.headers.get("X-Hub-Signature-256"), settings.whatsapp_app_secret):
@@ -39,9 +42,11 @@ async def receive_whatsapp(request: Request, background: BackgroundTasks):
         payload = json.loads(raw or b"{}")
     except json.JSONDecodeError:
         raise HTTPException(400, "Invalid JSON")
-    # Acknowledge immediately (Meta retries slow webhooks); process after the response.
-    background.add_task(process_webhook_payload, payload)
-    return {"status": "received"}
+    # Persist before acknowledging: if this raises (e.g. database down) the 5xx makes Meta redeliver.
+    # Processing (agent + reply) happens in the workers, so the response stays fast.
+    result = await run_in_threadpool(ingest_and_commit, payload)
+    workers.wake()
+    return {"status": "received", "accepted": len(result.event_ids)}
 
 
 # ---------------------------------------------------------------- payments
@@ -63,12 +68,12 @@ async def mock_payment_callback(request: Request, db: Session = Depends(get_db))
         raise HTTPException(404, "Payment not found")
     changed = confirm_payment(db, payment, str(body.get("status")), body,
                               body.get("reason") if body.get("status") == "failed" else None)
-    db.commit()
+    commit_and_deliver(db)
     return {"changed": changed, "status": payment.status}
 
 
 @router.api_route("/payments/momo/{payment_id}", methods=["PUT", "POST"])
-async def momo_callback(payment_id: str, request: Request, db: Session = Depends(get_db)):
+def momo_callback(payment_id: str, db: Session = Depends(get_db)):
     """MTN MoMo callback. MoMo callbacks are unsigned, so the body is only a hint:
     we re-query the MoMo API for the authoritative status before changing anything."""
     try:
@@ -76,5 +81,5 @@ async def momo_callback(payment_id: str, request: Request, db: Session = Depends
     except NotFoundError:
         raise HTTPException(404, "Payment not found")
     changed = refresh_and_notify(db, payment)
-    db.commit()
+    commit_and_deliver(db)
     return {"changed": changed, "status": payment.status}

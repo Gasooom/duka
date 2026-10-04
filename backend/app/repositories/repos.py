@@ -18,6 +18,7 @@ from app.models import (
     Product,
     ProductCategory,
     User,
+    WebhookEvent,
     WhatsAppAccount,
 )
 from app.repositories.base import TenantRepository
@@ -97,3 +98,7 @@ class KnowledgeDocumentRepo(TenantRepository[KnowledgeDocument]):
 
 class KnowledgeChunkRepo(TenantRepository[KnowledgeChunk]):
     model = KnowledgeChunk
+
+
+class WebhookEventRepo(TenantRepository[WebhookEvent]):
+    model = WebhookEvent

@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationError
@@ -141,10 +142,15 @@ class CartService:
         return self.db.get(Business, self.business_id)
 
     def get_active(self, customer: Customer, conversation: Conversation | None = None, *, create: bool = True) -> Cart | None:
-        cart = self.carts.first(Cart.customer_id == customer.id, Cart.status == "active")
+        where = (Cart.customer_id == customer.id, Cart.status == "active")
+        cart = self.carts.first(*where)
         if cart is None and create:
-            cart = self.carts.add(customer_id=customer.id, conversation_id=conversation.id if conversation else None,
-                                  status="active")
+            # Race-safe: the partial unique index uq_carts_active allows one active cart per customer.
+            self.db.execute(pg_insert(Cart).values(
+                id=uuid.uuid4(), business_id=self.business_id, customer_id=customer.id,
+                conversation_id=conversation.id if conversation else None, status="active",
+            ).on_conflict_do_nothing(index_elements=["business_id", "customer_id"], index_where=text("status = 'active'")))
+            cart = self.carts.first(*where)
         return cart
 
     def add_item(self, cart: Cart, product: Product, quantity: int = 1) -> CartItem:

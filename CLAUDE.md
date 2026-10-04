@@ -18,6 +18,10 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
 4. **Payments are confirmed only by the provider** (signed mock callback, or MoMo status re-query). Admins and the
    agent cannot set `paid`.
 5. **Webhooks never crash** on LLM/tool failure: fallback message + `agent_runs.status=error`.
+6. **Durable in, outbox out.** Inbound messages are committed to `webhook_events` before the webhook returns 200
+   and processed by `workflows/worker.py`. Customer-facing messages go through `send_to_customer` (queues in the
+   current transaction) and are sent after commit (`commit_and_deliver` or the worker). Never call an adapter
+   directly, and never send before the state the message describes is committed.
 
 ## Layout
 ```
@@ -28,7 +32,7 @@ backend/app
   agents          engine.py (context + tool loop), providers/ (openai_compat, rules), render.py
   tools           registry.py + commerce_tools.py (the 18 agent tools)
   integrations    whatsapp/ (parser, cloud+dev adapters), payments/ (base, mock, momo)
-  workflows       inbound.py (webhook pipeline), payments.py (confirmation + notification)
+  workflows       inbound.py (ingest/claim/process), worker.py (threads), payments.py (confirmation + notification)
 frontend/         Next.js admin dashboard (proxies /api via BACKEND_URL; no secrets in browser)
 ```
 

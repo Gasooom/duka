@@ -2,7 +2,18 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,6 +27,9 @@ PAYMENT_STATUSES = ("pending", "successful", "failed", "cancelled")
 
 class Cart(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "carts"
+    # At most one active cart per customer, even under concurrent messages.
+    __table_args__ = (Index("uq_carts_active", "business_id", "customer_id", unique=True,
+                            postgresql_where=text("status = 'active'")),)
 
     customer_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), index=True, nullable=False
