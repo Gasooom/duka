@@ -23,12 +23,13 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: uuid.UUID, business_id: uuid.UUID, role: str) -> str:
+def create_access_token(user_id: uuid.UUID, business_id: uuid.UUID, role: str, token_version: int = 0) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "bid": str(business_id),
         "role": role,
+        "tv": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
     }

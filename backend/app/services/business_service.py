@@ -54,7 +54,7 @@ def register_business(db: Session, *, business_name: str, email: str, password: 
                 full_name=full_name, role="owner")
     db.add(user)
     db.flush()
-    token = create_access_token(user.id, business.id, user.role)
+    token = create_access_token(user.id, business.id, user.role, user.token_version or 0)
     return business, user, token
 
 
@@ -62,7 +62,20 @@ def authenticate(db: Session, email: str, password: str) -> tuple[User, str]:
     user = db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
     if not user or not user.is_active or not verify_password(password, user.password_hash):
         raise PermissionDenied("Invalid email or password", code="invalid_credentials")
-    return user, create_access_token(user.id, user.business_id, user.role)
+    return user, create_access_token(user.id, user.business_id, user.role, user.token_version)
+
+
+def change_password(db: Session, user: User, current: str, new: str) -> None:
+    if not verify_password(current, user.password_hash):
+        raise PermissionDenied("Current password is incorrect", code="invalid_credentials")
+    set_password(user, new)
+
+
+def set_password(user: User, new: str) -> None:
+    if len(new) < 8:
+        raise ValidationError("Password must be at least 8 characters")
+    user.password_hash = hash_password(new)
+    user.token_version = (user.token_version or 0) + 1  # sign out every existing session
 
 
 def get_business(db: Session, business_id: uuid.UUID) -> Business:

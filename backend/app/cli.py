@@ -32,6 +32,28 @@ def create_business(args: argparse.Namespace) -> int:
     return 0
 
 
+def reset_password(args: argparse.Namespace) -> int:
+    from sqlalchemy import func, select
+
+    from app.models import User
+    from app.services.business_service import set_password
+    password = args.password or secrets.token_urlsafe(18)
+    with session_scope() as db:
+        user = db.scalar(select(User).where(func.lower(User.email) == args.email.strip().lower()))
+        if user is None:
+            print("error: no user with that email", file=sys.stderr)
+            return 1
+        try:
+            set_password(user, password)
+        except DomainError as exc:
+            print(f"error: {exc.message}", file=sys.stderr)
+            return 1
+    print(f"Password reset for {args.email}")
+    if not args.password:
+        print(f"Generated password (shown once): {password}")
+    return 0
+
+
 def llm_check(args: argparse.Namespace) -> int:
     """One real call to the configured LLM with a tool schema: proves the key, model and tool calling work.
     Touches no database. Exit 0 = the model called the tool, 1 = it answered without the tool, 2 = failure."""
@@ -69,6 +91,10 @@ def llm_check(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
+    r = sub.add_parser("reset-password", help="Set a new password for a user (generated if omitted)")
+    r.add_argument("--email", required=True)
+    r.add_argument("--password")
+    r.set_defaults(func=reset_password)
     c = sub.add_parser("llm-check", help="Make one real call to the configured LLM (needs LLM_API_KEY)")
     c.add_argument("--message", default="Muraho! Ndashaka inkweto z'umukara ziri munsi ya 100,000 RWF.")
     c.set_defaults(func=llm_check)

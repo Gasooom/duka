@@ -77,8 +77,9 @@ export function Field({ label, children, hint }: { label: string; children: Reac
   );
 }
 
-/** Fetch helper: returns data, error, loading and a reload function. */
-export function useApi<T = any>(path: string | null) {
+/** Fetch helper: returns data, error, loading and a reload function. With `refreshMs` it re-fetches on that
+ * interval while the tab is visible, so new orders and handoffs show up without reloading the page. */
+export function useApi<T = any>(path: string | null, refreshMs?: number) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,5 +98,10 @@ export function useApi<T = any>(path: string | null) {
   useEffect(() => {
     reload();
   }, [reload]);
+  useEffect(() => {
+    if (!refreshMs) return;
+    const id = setInterval(() => { if (document.visibilityState === "visible") reload(); }, refreshMs);
+    return () => clearInterval(id);
+  }, [reload, refreshMs]);
   return { data, error, loading, reload, setData };
 }

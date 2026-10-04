@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
 import { api, getToken, setToken } from "@/lib/api";
+import { useApi } from "@/components/ui";
 
 const NAV = [
   { href: "/dashboard", label: "Overview" },
@@ -15,13 +16,16 @@ const NAV = [
   { href: "/dashboard/whatsapp", label: "WhatsApp" },
   { href: "/dashboard/business", label: "Business & AI" },
   { href: "/dashboard/settings", label: "Settings" },
+  { href: "/dashboard/account", label: "Account" },
 ];
+const BADGE: Record<string, string> = { "/dashboard/orders": "orders_awaiting_review", "/dashboard/conversations": "needs_attention" };
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const path = usePathname();
   const router = useRouter();
   const [me, setMe] = useState<any>(null);
   const [open, setOpen] = useState(false);
+  const { data: stats } = useApi<any>(me ? "/dashboard/stats" : null, 20000);
 
   useEffect(() => {
     if (!getToken()) {
@@ -50,7 +54,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           {NAV.map((n) => (
             <Link key={n.href} href={n.href}
               className={`block rounded-md px-3 py-2 text-sm ${isActive(n.href) ? "bg-brand-soft font-medium text-brand" : "text-ink-soft hover:bg-canvas"}`}>
-              {n.label}
+              <span className="flex items-center justify-between">
+                {n.label}
+                {BADGE[n.href] && stats?.[BADGE[n.href]] > 0 && (
+                  <span className="rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-white">{stats[BADGE[n.href]]}</span>
+                )}
+              </span>
             </Link>
           ))}
           <button className="mt-4 block w-full rounded-md px-3 py-2 text-left text-sm text-ink-mute hover:bg-canvas"
@@ -59,7 +68,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           </button>
         </nav>
       </aside>
-      <main className="min-w-0 flex-1 px-4 py-6 md:px-8">{children}</main>
+      <main className="min-w-0 flex-1 px-4 py-6 md:px-8">
+        {stats && stats.ai_enabled === false && (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            The AI assistant is <b>paused</b>: customers get one “our team will reply” message and wait for you in the inbox.{" "}
+            <Link href="/dashboard/settings" className="underline">Turn it back on</Link>
+          </div>
+        )}
+        {children}
+      </main>
     </div>
   );
 }

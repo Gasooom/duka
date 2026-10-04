@@ -67,7 +67,7 @@ const ROLE_STYLE: Record<string, string> = {
 
 export default function ConversationDebugger({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data: c, error, reload } = useApi<any>(`/conversations/${id}`);
+  const { data: c, error, reload } = useApi<any>(`/conversations/${id}`, 5000);
   const [showTools, setShowTools] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [reply, setReply] = useState("");

@@ -10,7 +10,7 @@ function Inner() {
   const params = useSearchParams();
   const router = useRouter();
   const attention = params.get("attention") === "1";
-  const { data, error } = useApi<any[]>(`/conversations${attention ? "?needs_attention=true" : ""}`);
+  const { data, error } = useApi<any[]>(`/conversations${attention ? "?needs_attention=true" : ""}`, 10000);
   return (
     <div>
       <PageHeader title="Conversations" subtitle="Open one to see the full AI trace: decisions, tool calls, inputs, outputs, latency, tokens." />

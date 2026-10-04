@@ -67,6 +67,7 @@ function Simulator() {
 
 export default function WhatsAppPage() {
   const { data: accounts, error, reload } = useApi<any[]>("/whatsapp/accounts");
+  const { data: me } = useApi<any>("/auth/me");
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [origin, setOrigin] = useState("https://your-backend");
@@ -125,7 +126,7 @@ export default function WhatsAppPage() {
             </ol>
           </section>
         </div>
-        <Simulator />
+        {me?.features?.dev_tools && <Simulator />}
       </div>
     </div>
   );

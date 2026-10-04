@@ -158,7 +158,7 @@ function OrdersInner() {
   const router = useRouter();
   const status = params.get("status") || "";
   const selected = params.get("id");
-  const { data, error, reload } = useApi<any[]>(`/orders${status ? `?status=${status}` : ""}`);
+  const { data, error, reload } = useApi<any[]>(`/orders${status ? `?status=${status}` : ""}`, 15000);
   const go = (q: Record<string, string>) => {
     const sp = new URLSearchParams({ ...(status ? { status } : {}), ...(selected ? { id: selected } : {}), ...q });
     for (const [k, v] of Array.from(sp.entries())) if (!v) sp.delete(k);

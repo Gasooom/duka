@@ -64,7 +64,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 213 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 217 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -81,9 +81,15 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_agent.py` | OpenAI-compatible tool loop, token/latency capture, invalid/unknown tool calls contained, iteration cap, LLM outage → fallback, greeting fast path, bounded context, summaries |
 | `test_durability.py` | Persist-before-ack, crash recovery (lease), redeliveries have one effect, rollback means no reply, retries/dead-letter, per-customer ordering, outbox retry/failure, background threads |
 | `test_human_control.py` | Business hours parsing in the shop's timezone, after-hours expectations for handoffs/voice notes/orders, `open_now` as a tool fact, business-wide AI pause |
+| `test_dashboard_ops.py` | Setup checklist, password change signs out other devices, operator password reset, dev tools hidden in production |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
 
 ---
+
+Dashboard smoke test in a real browser (needs the Docker stack running and seeded):
+```bash
+cd scripts/ui-smoke && npm install && npm run setup && npm run smoke
+```
 
 ## Onboarding a new business (no code)
 1. On the server: `python -m app.cli create-business --name "Shop" --email owner@shop.rw` (prints a generated
@@ -192,7 +198,8 @@ GET /health
 - The frontend proxies `/api` on the server side. No API keys ever reach the browser.
 
 ## Future work (deliberately out of V1)
-- Staff invitations and roles UI. The `staff` role exists, but there's no invite flow yet.
+- Staff invitations and roles UI. The `staff` role exists, but there's no invite flow yet. Forgotten passwords are
+  reset by an operator: `python -m app.cli reset-password --email owner@shop.rw`.
 - Redis-backed rate limiting and a job queue when running more than one instance (today: in-process + BackgroundTasks).
 - Postgres row-level security as defence in depth on top of repository scoping.
 - WhatsApp interactive messages (lists/buttons, product images), template messages outside the 24h window, voice notes.

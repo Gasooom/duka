@@ -41,6 +41,8 @@ class User(IdMixin, TimestampMixin, TenantMixin, Base):
     full_name: Mapped[str | None] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(20), default="owner", nullable=False)  # owner | staff
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Bumped on password change/reset: tokens carrying an older version are rejected (logs out other devices).
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
 
 class BusinessSettings(IdMixin, TimestampMixin, TenantMixin, Base):

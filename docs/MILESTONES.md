@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4, M5, M6 complete; M3 code complete, live LLM blocked).
+Last updated: 2026-10-04 (M2, M4, M5, M6, M7 complete; M3 code complete, live LLM blocked).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -278,14 +278,38 @@ owner alert recorded, AI silent; resume -> the assistant answers again.
 
 Remaining: the dashboard does not refresh by itself yet, so the owner sees new handoffs on reload (M7).
 
-### M7 — Merchant dashboard · IN PROGRESS
-Present: inbox with takeover/reply/return, conversation debugger, orders list/details/status changes,
-products CRUD + deactivate + stock + CSV import, knowledge text/PDF/TXT/MD, business profile, AI config,
-delivery zones, payment provider, WhatsApp connect, stats.
+### M7 — Merchant dashboard · COMPLETE
 
-Gaps: no live refresh; no order accept/reject; no manual payment; "Simulate payment" buttons are the main
-payment action; business hours editing UX unverified; no handoff/after-hours settings; no AI pause per
-business; JWT stored in localStorage; public self-registration is open.
+A merchant can operate without developer or database access:
+- **Inbox:** conversations (all / needs attention), customer, full message history incl. AI trace, AI/human
+  status, take over, reply, return to AI (optional message). Refreshes every 10 s (list) / 5 s (open chat).
+- **Orders:** list with fulfilment + payment status, details (customer, items, totals, address, confirmation
+  evidence), accept / reject with reason, ready / out for delivery / delivered, record manual payment (MoMo ref,
+  cash note, bank), void with reason, audited history. Refreshes every 15 s.
+- **Products:** create, edit price/stock/details, deactivate, delete, CSV import with per-row errors (existing).
+- **Knowledge:** add FAQ/policy text, upload PDF/TXT/MD, search, delete (existing).
+- **Settings:** business profile and validated hours, delivery zones, WhatsApp numbers, AI on/paused, handoff
+  on/off, how customers pay + the exact payment instructions, owner alert number + optional Meta template.
+- **New in M7:** nav badges (orders to review, conversations needing a person) refreshed every 20 s; an "AI
+  paused" banner; a **setup checklist** on the overview (real WhatsApp number connected, products, delivery
+  zones, payment instructions, alert number, hours, AI on, and — honestly — whether the platform LLM is
+  configured); an **alerts feed** showing whether each owner alert reached WhatsApp; an **Account** page to change
+  the password (signs out other devices via a token version); operator CLI `reset-password` for forgotten
+  passwords; the dev simulator is hidden when dev tools are off (production).
+
+Evidence:
+- `tests/test_dashboard_ops.py`: setup checklist reflects real state; change password (wrong current -> 403,
+  too short -> 422, old sessions -> 401, new token works, old password rejected); operator reset signs out every
+  session; dev-tools flag off in production. `pytest -q` -> 217 passed; ruff clean; migration 0007 clean.
+- **Headless browser walk-through** (`scripts/ui-smoke`, Playwright/Chromium against the Docker stack), 20/20:
+  login; checklist + honest platform-AI warning; alert for the new order; nav badges; order shows confirmation
+  evidence; Accept; record a cash payment -> "Confirmed by the shop (manual record)" + audited history (API
+  agrees: accepted, paid, confirmation_source=owner); inbox -> handed-off chat -> staff reply delivered; settings
+  controls; account page; no horizontal scroll at 375 px on overview/orders/inbox/settings; zero console errors.
+  Live refresh: an order placed on WhatsApp appeared on the open orders page after 15.1 s without a reload.
+
+Remaining: no staff invitations/roles UI (single owner login per shop for the pilot); polling, not push
+(fine at pilot scale); JWT in localStorage (httpOnly cookies are a later hardening step).
 
 ### M8 — Reliability · NOT STARTED (partial building blocks)
 Present: JSON logs with request/tenant context and key-based redaction; `agent_runs` records latency,
@@ -320,7 +344,7 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 | Owner receives new-order notification | 🟡 M5 (dashboard + WhatsApp outbox; live Meta delivery untested) |
 | Owner can review/accept orders | ✅ M5 |
 | Human takeover works | ✅ M5/M6 (detection EN/RW/FR/SW, low confidence, voice notes, after hours, takeover, AI pause, explicit return) |
-| Merchant dashboard works | 🟡 |
+| Merchant dashboard works | ✅ M7 (headless browser walk-through 20/20, live refresh) |
 | Production HTTPS works | ❌ |
 | Secrets are protected | 🟡 env-based, encrypted tokens; no prod secret handling |
 | PostgreSQL is not publicly exposed | ❌ published on 0.0.0.0:5432 |

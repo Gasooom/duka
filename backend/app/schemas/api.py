@@ -21,6 +21,11 @@ class RegisterIn(BaseModel):
     currency: str = Field("RWF", min_length=3, max_length=3)
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(..., max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 class LoginIn(BaseModel):
     email: EmailStr
     password: str

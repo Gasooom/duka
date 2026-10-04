@@ -30,10 +30,11 @@ def get_tenant(authorization: str | None = Header(None), db: Session = Depends(g
         payload = decode_access_token(authorization.split(" ", 1)[1])
         user_id = uuid.UUID(payload["sub"])
         business_id = uuid.UUID(payload["bid"])
+        token_version = int(payload.get("tv", 0))
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     user = db.get(User, user_id)
-    if not user or not user.is_active or user.business_id != business_id:
+    if not user or not user.is_active or user.business_id != business_id or user.token_version != token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     business = db.get(Business, business_id)
     if not business or not business.is_active:
