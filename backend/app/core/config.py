@@ -27,8 +27,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
-    llm_timeout_seconds: float = 30.0
+    llm_timeout_seconds: float = 20.0      # per HTTP attempt (also capped by the turn budget)
+    llm_max_attempts: int = 3              # bounded retries on 408/409/429/5xx/network errors
+    llm_max_tokens: int = 500
     llm_temperature: float = 0.2
+    agent_turn_timeout_seconds: float = 45.0  # whole turn (all LLM calls + tools); then the fallback is sent
+    agent_max_tool_calls: int = 8
     agent_max_history_messages: int = 8
     agent_max_tool_iterations: int = 5
     agent_summary_trigger_messages: int = 24
@@ -84,6 +88,23 @@ class Settings(BaseSettings):
         if bad:
             raise ValueError(f"{', '.join(bad)}: value starts with '#'. Put .env comments on their own line.")
         return self
+
+    def production_problems(self) -> list[str]:
+        """Configuration that must never reach production. main.py refuses to start if any is found."""
+        problems = []
+        if len(self.jwt_secret) < 32 or self.jwt_secret.startswith("change-me"):
+            problems.append("JWT_SECRET must be a random string of at least 32 characters")
+        if not self.encryption_key:
+            problems.append("ENCRYPTION_KEY must be set (Fernet key for WhatsApp tokens)")
+        if self.llm_provider != "openai_compat" or not self.llm_api_key:
+            problems.append("LLM_PROVIDER=openai_compat with LLM_API_KEY is required (the rules engine is not AI)")
+        if not self.whatsapp_app_secret:
+            problems.append("WHATSAPP_APP_SECRET must be set (webhook signature verification)")
+        if not self.whatsapp_verify_token or self.whatsapp_verify_token.startswith("choose-"):
+            problems.append("WHATSAPP_VERIFY_TOKEN must be a random string")
+        if ":commerce@" in self.database_url:
+            problems.append("DATABASE_URL uses the default development password")
+        return problems
 
     @property
     def is_production(self) -> bool:

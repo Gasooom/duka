@@ -17,8 +17,8 @@ from app.workflows.worker import workers
 configure_logging(settings.log_level)
 logger = get_logger("app")
 
-if settings.is_production and settings.jwt_secret in ("", "change-me-in-env"):
-    raise RuntimeError("JWT_SECRET must be set in production")
+if settings.is_production and settings.production_problems():
+    raise RuntimeError("Refusing to start in production:\n- " + "\n- ".join(settings.production_problems()))
 
 
 

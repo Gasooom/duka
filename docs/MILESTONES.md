@@ -1,6 +1,6 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4, M5 complete).
+Last updated: 2026-10-04 (M2, M4, M5 complete; M3 code complete, live LLM blocked).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -86,18 +86,59 @@ unique (registration is closed in production; login gives the same error for unk
 Remaining risks: isolation is enforced by repositories + DB triggers, not Postgres RLS (reads are not DB-enforced).
 Rate limits are per process.
 
-### M3 — Real AI · IN PROGRESS · live verification BLOCKED (LLM credential)
-Done: OpenAI-compatible provider with tool calling, retries, timeout, malformed-response handling, invalid
-JSON args, unknown tools, iteration cap, fallback message, token/latency capture (all stub-tested).
+### M3 — Real AI · code COMPLETE · live verification BLOCKED (LLM credential)
 
-Gaps:
-- `LLM_PROVIDER=rules` is the default; no real model has ever been called.
-- The model's final text is not checked: if it writes a price or total that no tool returned, it is still sent.
-- `create_order` relies on the prompt alone ("only when the customer confirms"), not on server-side state.
-- Worst-case latency is unbounded for WhatsApp: 5 iterations × 30 s timeout × 3 attempts, all inside one DB
-  transaction holding the conversation row lock.
-- Multilingual: zero tests. Live (rules): Kinyarwanda → "couldn't find anything"; French → wrong products.
-- Customer WhatsApp number is sent to the LLM vendor in the context snapshot (unnecessary PII).
+Not COMPLETE until a real provider has been called successfully: run `python -m app.cli llm-check` with
+`LLM_PROVIDER=openai_compat`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` (exit 0 = the model called the tool).
+Today it reports `key=MISSING` / exit 2.
+
+Production LLM path (existing `openai_compat` adapter, works with OpenAI, Gemini, Groq, OpenRouter, DeepSeek):
+- **Time budget:** a whole turn is capped (`AGENT_TURN_TIMEOUT_SECONDS`, 45 s). Each HTTP attempt's timeout is
+  capped by what is left; retries are bounded (`LLM_MAX_ATTEMPTS`) and only on 408/409/429/5xx/network,
+  honouring `Retry-After` when it fits. Previously a turn could take ~7 minutes inside a DB transaction.
+- **Malformed output** (non-JSON, no choices, content parts, non-object/invalid tool args) is handled; tool
+  argument models now reject unknown fields, so `{"__invalid_json__": ...}` or invented arguments are an error the
+  model must fix instead of being silently ignored. Tool calls per turn are capped (`AGENT_MAX_TOOL_CALLS`).
+- **Missing/invalid key behaves like an outage** (fallback + error recorded), not a crashed turn that would be
+  dead-lettered without a reply; production refuses to start without a real LLM configured.
+- **No fabricated commerce facts** — layered, not a single regex:
+  1. the highest-stakes texts are never model-written (summary/confirmation, payment and status messages, M5),
+     and no tool can change prices, orders or payments;
+  2. `agents/grounding.py` checks every final reply against a typed ledger of this turn's tool results and server
+     state: money must equal a tool money value and, next to a single product, that product's own price; order
+     numbers and order/payment status claims must come from tools; "order placed" needs an order fact;
+     availability needs returned products, must name one of them (unless exactly one was returned) and must not
+     contradict stock; cart-change claims need a cart tool; any other number must come from tool data or the
+     customer's own words (their budget may be repeated, a price they suggest may not); prompt-leak markers;
+  3. on any violation the customer gets the deterministic server rendering of the same tool results (or a
+     clarifying question if there are none), and the violation is recorded in the agent run for the debugger.
+- **Handoff on uncertainty:** two consecutive turns that fail (LLM error, or nothing verifiable to say) hand the
+  conversation to a person with an owner alert; a good turn resets the counter.
+- **Prompt injection:** customer text and tool results are declared data in the prompt, but the guarantees do
+  not depend on the model obeying: tests simulate a fully compromised model (calls non-existent `update_price` /
+  `mark_paid`, claims RWF 1 and "paid", obeys an injected "50% off" from a knowledge document, leaks its rules,
+  asks for another store's product) and the price, payment status and replies stay correct.
+- **PII minimisation:** the LLM vendor no longer receives the customer's phone number (first name only); the
+  payer phone in tool results is masked (`***222`). Asserted on the actual HTTP payload.
+- **Multilingual:** the prompt asks for replies in the customer's language (EN/RW/FR/SW, mixed); search tool
+  arguments ask the model to translate queries into the catalog's language; grounding works identically for
+  Kinyarwanda, French and mixed replies (tested). Real multilingual *quality* is NOT claimed: it needs the real
+  model and native-speaker review (M10).
+
+Evidence: `tests/test_ai_safety.py` (33 cases): invented price / wrong product's price / stock / delivery fee /
+payment status / order status / fake order number / fake product (alone and next to real results) / claimed cart
+change / claimed order placement / unverifiable answer without tools; 4 prompt-injection cases; cross-tenant
+request; PII on the wire; retry budget, Retry-After, no retry on 4xx; 3 malformed outputs; invalid tool args;
+slow-model cutoff; tool-call cap; repeated failures -> handoff; streak reset; 3 multilingual grounding cases;
+grounding unit cases. `test_hardening.py`: production refuses unsafe config; missing key = outage.
+`pytest -q` -> 195 passed; ruff clean. Live: `APP_ENV=production` with the dev `.env` refuses to start and lists
+all six problems.
+
+Remaining risks:
+- No real model has been called. Model quality, false-positive rate of the grounding check (safe but less
+  natural replies) and multilingual quality must be measured with the real key (M10).
+- A product name invented *alongside* real ones without any price/stock/availability claim is not detected.
+- Server-rendered messages (summary, statuses) are English-only.
 
 ### M4 — Durable WhatsApp processing · COMPLETE (code) · live Meta verification BLOCKED (Meta app, number, token, public HTTPS URL)
 
@@ -247,11 +288,11 @@ No eval set, no versioning, no prompt-injection or multilingual cases.
 
 | Item | State |
 |---|---|
-| Real LLM works | ❌ never called (credential) |
+| Real LLM works | 🟡 production path + safety built (M3); BLOCKED until `app.cli llm-check` succeeds with a real key |
 | Real WhatsApp works / real webhook works | ❌ never connected (Meta setup) |
 | Tenant isolation is proven | ✅ M2 (API, tools, webhooks, DB triggers, concurrency) |
 | Real products/prices are used | ✅ from DB (no real merchant catalog yet) |
-| AI does not invent commerce facts | 🟡 tools are DB-backed; model output unchecked |
+| AI does not invent commerce facts | 🟡 server-rendered critical texts + grounding check with deterministic fallback (M3); to be measured with the real model (M10) |
 | Cart works | ✅ |
 | Explicit order confirmation works | ✅ M5 (server-enforced, tested incl. misbehaving LLM) |
 | Owner receives new-order notification | 🟡 M5 (dashboard + WhatsApp outbox; live Meta delivery untested) |

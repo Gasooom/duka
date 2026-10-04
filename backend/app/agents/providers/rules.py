@@ -61,7 +61,7 @@ class RulesProvider(LLMProvider):
     is_llm = False
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, model: str | None = None,
-                 temperature: float = 0.2) -> LLMResponse:
+                 temperature: float = 0.2, timeout: float | None = None) -> LLMResponse:
         allowed = {t["function"]["name"] for t in tools}
         if messages and messages[-1]["role"] == "tool":
             return LLMResponse(content=self._render(messages), model="rules")

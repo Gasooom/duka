@@ -3,7 +3,7 @@ each business's data and configuration."""
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 
 from app.core.errors import NotFoundError, ValidationError
@@ -69,23 +69,30 @@ def _order_dict(o) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- arg models
-class SearchArgs(BaseModel):
-    query: str = Field(..., description="What the customer is looking for, e.g. 'black sneakers'")
+class Args(BaseModel):
+    # Unknown or malformed arguments are an error the model must fix, never silently ignored.
+    model_config = ConfigDict(extra="forbid")
+
+
+class SearchArgs(Args):
+    query: str = Field(..., description="Search terms in the catalog's language: translate the customer's words "
+                                        "(e.g. Kinyarwanda 'inkweto z'umukara' or French 'baskets noires' -> "
+                                        "'black sneakers')")
     max_price: float | None = Field(None, ge=0, description="Maximum unit price in the business currency")
     min_price: float | None = Field(None, ge=0)
     category: str | None = None
     limit: int = Field(5, ge=1, le=10)
 
 
-class ProductRefArgs(BaseModel):
+class ProductRefArgs(Args):
     product_ref: str = Field(..., description="Position from the last search results (e.g. '2'), product_id, or SKU")
 
 
-class NoArgs(BaseModel):
+class NoArgs(Args):
     pass
 
 
-class KnowledgeArgs(BaseModel):
+class KnowledgeArgs(Args):
     query: str = Field(..., description="The customer's question about policies, delivery, returns, hours, etc.")
 
 
@@ -93,37 +100,37 @@ class AddToCartArgs(ProductRefArgs):
     quantity: int = Field(1, ge=1, le=50)
 
 
-class TotalArgs(BaseModel):
+class TotalArgs(Args):
     delivery_location: str | None = Field(None, description="Customer's delivery area/address if known")
 
 
-class CheckoutArgs(BaseModel):
+class CheckoutArgs(Args):
     delivery_address: str | None = Field(None, max_length=300, description="The customer's delivery address "
                                          "(area + street or landmark), exactly as they gave it. Required when "
                                          "delivery applies; never invent it.")
     notes: str | None = Field(None, max_length=500)
 
 
-class OrderNumberArgs(BaseModel):
+class OrderNumberArgs(Args):
     order_number: str | None = Field(None, description="Order number like KF-00012. Omit for the latest order.")
 
 
-class DeliveryArgs(BaseModel):
+class DeliveryArgs(Args):
     location: str = Field(..., description="Area, neighbourhood or city")
 
 
-class PaymentArgs(BaseModel):
+class PaymentArgs(Args):
     order_number: str | None = Field(None, description="Order to pay. Omit to pay the latest unpaid order.")
     phone_number: str | None = Field(None, description="Mobile money number. Omit to use the customer's WhatsApp number.")
 
 
-class PaymentReferenceArgs(BaseModel):
+class PaymentReferenceArgs(Args):
     reference: str = Field(..., min_length=4, max_length=128,
                            description="The transaction ID/reference the customer sent after paying")
     order_number: str | None = Field(None, description="Omit for the latest unpaid order.")
 
 
-class HandoffArgs(BaseModel):
+class HandoffArgs(Args):
     reason: str = Field(..., max_length=300)
 
 
@@ -273,7 +280,8 @@ def initiate_payment(ctx: ToolContext, a: PaymentArgs) -> dict[str, Any]:
                 "note": "No payment request was sent. Only the shop can confirm a payment."}
     payment = payments.initiate(order, a.phone_number or ctx.customer.whatsapp_number)
     return {"order_number": order.order_number, "amount": float(payment.amount), "currency": payment.currency,
-            "payment_status": payment.status, "provider": payment.provider, "payer_phone": payment.payer_phone,
+            "payment_status": payment.status, "provider": payment.provider,
+            "payer_phone": f"***{payment.payer_phone[-3:]}" if payment.payer_phone else None,  # PII minimisation
             "instructions": "A payment request was sent. The customer must approve it on their phone. "
                             "The order is NOT paid until the provider confirms."}
 

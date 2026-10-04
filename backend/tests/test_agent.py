@@ -83,7 +83,7 @@ class Scripted(LLMProvider):
         self.responses = list(responses)
         self.seen = []
 
-    def complete(self, messages, tools, *, model=None, temperature=0.2):
+    def complete(self, messages, tools, *, model=None, temperature=0.2, timeout=None):
         self.seen.append(messages)
         r = self.responses.pop(0)
         if isinstance(r, Exception):

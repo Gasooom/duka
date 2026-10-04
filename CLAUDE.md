@@ -22,6 +22,9 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
 7. **Orders need an explicit confirmation.** The LLM can only `prepare_checkout`; an order is created only by
    `CheckoutService.confirm` when a later customer message is an explicit YES to the delivered, unchanged summary.
    Never assume a delivery zone or address. Never add a tool that creates orders or confirms payments.
+9. **Model text is checked before it is sent.** `agents/grounding.py` verifies every LLM reply against this turn's
+   tool results; on a violation the deterministic render is sent instead. Don't bypass it, and add a regression
+   case to `tests/test_ai_safety.py` for every new kind of fact the agent can state.
 8. **Sensitive actions are audited** (`audit_service.record`): manual payments, voids, order status changes,
    takeovers. `audit_events` is append-only.
 5. **Webhooks never crash** on LLM/tool failure: fallback message + `agent_runs.status=error`.

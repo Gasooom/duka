@@ -64,7 +64,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 162 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 195 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -77,6 +77,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_orders_handoff.py` | Strict multilingual YES/NO, one order per confirmation, misbehaving LLM can't place orders or alter the summary, owner alerts (+ template), review/reject, handoff in EN/RW/FR/SW without false positives, takeover pauses the AI, explicit return |
 | `test_payments.py` | Manual payments (evidence, owner-only, reference reuse blocked, void, audit append-only), customer-reported refs stay pending, the agent can never mark paid, mock refused in production, provider callbacks, MoMo re-verification |
 | `test_whatsapp.py` | Verify handshake, signature check, duplicate delivery, unknown tenant, non-text, handoff stops the AI, encrypted tokens, Cloud adapter retries, message ordering |
+| `test_ai_safety.py` | Invented prices/stock/fees/statuses/products never reach the customer, prompt injection with a fully compromised model, cross-tenant requests, no phone number sent to the LLM, retry/time budget, malformed output, handoff after repeated failures, multilingual grounding |
 | `test_agent.py` | OpenAI-compatible tool loop, token/latency capture, invalid/unknown tool calls contained, iteration cap, LLM outage → fallback, greeting fast path, bounded context, summaries |
 | `test_durability.py` | Persist-before-ack, crash recovery (lease), redeliveries have one effect, rollback means no reply, retries/dead-letter, per-customer ordering, outbox retry/failure, background threads |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
@@ -104,7 +105,7 @@ Everything below works in dev mode without credentials. The real integrations ar
 | Integration | Status | Where to put it |
 |---|---|---|
 | WhatsApp Cloud API (send + receive) | **BLOCKED BY EXTERNAL CREDENTIAL**. The code is implemented and tested against Meta's documented request/response shapes. | `.env`: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`. Dashboard → WhatsApp: phone_number_id + permanent token (mode `cloud`). Meta webhook URL: `https://<backend>/webhooks/whatsapp`, field `messages`. |
-| LLM (real language understanding) | **BLOCKED BY EXTERNAL CREDENTIAL**. Implemented for any OpenAI-compatible API, and the tool loop is tested with a stubbed endpoint. | `LLM_PROVIDER=openai_compat`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (e.g. Gemini Flash / gpt-4o-mini / Groq Llama) |
+| LLM (real language understanding) | **BLOCKED BY EXTERNAL CREDENTIAL**. Implemented for any OpenAI-compatible API with turn budget, bounded retries and a grounding check on every reply; tested with stubbed endpoints and simulated misbehaving models. Verify with `python -m app.cli llm-check`. | `LLM_PROVIDER=openai_compat`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (e.g. Gemini Flash / gpt-4o-mini / Groq Llama) |
 | MTN MoMo Collections | **BLOCKED BY EXTERNAL CREDENTIAL**. Request-to-Pay, status polling and callback re-verification are implemented. | `MOMO_SUBSCRIPTION_KEY`, `MOMO_API_USER`, `MOMO_API_KEY`, `MOMO_CALLBACK_HOST`, `MOMO_TARGET_ENVIRONMENT` (sandbox: `MOMO_CURRENCY_OVERRIDE=EUR`). Then Settings → provider = MTN MoMo. |
 | Semantic embeddings | Optional. The default `hash` embedder is free and offline (lexical). | `EMBEDDING_PROVIDER=openai_compat`, `EMBEDDING_API_KEY` (re-embed the catalog by re-importing it) |
 
@@ -116,6 +117,9 @@ Everything below works in dev mode without credentials. The real integrations ar
 - **The LLM never produces facts.** Prices, stock, totals, delivery fees and order/payment status come from tools,
   then services, then the DB. Tools validate their arguments with Pydantic and run in a SAVEPOINT. Errors go back
   to the model as `ok:false`.
+- **Model replies are checked against the tools.** Every number, price, order number, order/payment status and
+  availability claim in an LLM reply must match this turn's tool results; otherwise the customer gets the server's
+  own rendering of those results. Two unanswerable turns in a row hand the chat to a person.
 - **Deterministic first, LLM when needed.** Totals, stock, delivery quotes, order status and payment confirmation
   are plain code. Bare greetings skip the LLM entirely (`fast_path`).
 - **Small context.** The prompt has the tenant's prompt (~250 tokens), a one-line state snapshot (last products

@@ -68,3 +68,28 @@ def test_settings_reject_env_values_that_are_really_comments():
     from app.core.config import Settings
     with pytest.raises(ValidationError, match="WHATSAPP_APP_SECRET"):
         Settings(whatsapp_app_secret="# (CREDENTIAL) Meta App > Settings > Basic > App secret")
+
+
+def test_production_refuses_unsafe_configuration():
+    from app.core.config import Settings
+    unsafe = Settings(app_env="production", jwt_secret="change-me-to-a-long-random-string", encryption_key="",
+                      llm_provider="rules", llm_api_key="", whatsapp_app_secret="", whatsapp_verify_token="",
+                      database_url="postgresql+psycopg://commerce:commerce@db:5432/commerce")
+    problems = " ".join(unsafe.production_problems())
+    for needle in ("JWT_SECRET", "ENCRYPTION_KEY", "LLM_PROVIDER", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN",
+                   "DATABASE_URL"):
+        assert needle in problems
+    safe = Settings(app_env="production", jwt_secret="x" * 40, encryption_key="k", llm_provider="openai_compat",
+                    llm_api_key="sk-test", whatsapp_app_secret="s", whatsapp_verify_token="v" * 20,
+                    database_url="postgresql+psycopg://duka:Str0ng@db:5432/duka")
+    assert safe.production_problems() == []
+
+
+def test_missing_llm_key_behaves_like_an_outage_not_a_crash(fashion, outbox, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "llm_provider", "openai_compat")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    fashion.send("black sneakers")
+    assert outbox.sent[-1][1].startswith("Sorry, I'm having trouble")
+    run = fashion.get(f"/api/conversations/{fashion.get('/api/conversations').json()[0]['id']}").json()["agent_runs"][0]
+    assert run["status"] == "error" and "LLM_API_KEY" in run["error"]

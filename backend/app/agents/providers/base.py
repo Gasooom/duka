@@ -32,4 +32,5 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, model: str | None = None,
-                 temperature: float = 0.2) -> LLMResponse: ...
+                 temperature: float = 0.2, timeout: float | None = None) -> LLMResponse:
+        """`timeout`: seconds left in the caller's turn budget; the provider must not exceed it."""
