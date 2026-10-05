@@ -4,12 +4,13 @@ from __future__ import annotations
 import csv
 import io
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, literal, or_, text
+from sqlalchemy import Text, cast, func, literal, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationError
@@ -23,29 +24,80 @@ STOPWORDS = {
     "please", "under", "below", "less", "than", "over", "above", "cheap", "price", "rwf", "frw", "k", "get", "buy",
     "can", "could", "would", "like", "there", "what", "which", "that", "this", "these", "those", "one", "ones",
     "hi", "hello", "hey", "available", "sell", "selling", "got", "something",
+    # Words that never name a product: browsing, stock, size and budget talk, chat filler.
+    "product", "products", "item", "items", "thing", "things", "stuff", "anything", "everything", "all", "option",
+    "options", "catalog", "catalogue", "menu", "list", "kind", "kinds", "type", "types", "stock", "instock", "size",
+    "sizes", "color", "colour", "colors", "colours", "cost", "costs", "much", "many", "how", "about", "tell", "know",
+    "see", "pay", "it", "its", "at", "by", "from", "be", "will", "just", "also", "only", "other", "else", "still",
+    "more", "yes", "no", "ok", "okay", "thanks", "thank", "pls", "plz",
 }
-_TOKEN = re.compile(r"[a-z0-9]+")
-VECTOR_THRESHOLD = 0.30
+# Words that describe a product rather than name one (stemmed). A product matching only these is not a match —
+# "black" in "black dress" must not return black tea — but a query made only of them ("something black") searches
+# by them.
+MODIFIERS = {
+    "black", "white", "red", "blue", "green", "yellow", "orange", "purple", "pink", "brown", "grey", "gray",
+    "beige", "navy", "gold", "golden", "silver", "maroon", "cream", "khaki", "dark", "light", "small", "medium",
+    "large", "big", "mini", "xs", "xl", "xxl", "long", "short", "slim", "tall", "wide", "cotton", "leather", "plastic",
+    "wood", "wooden", "metal", "steel", "silk", "wool", "denim", "canvas", "new", "original", "genuine", "best", "good",
+    "nice", "premium", "quality", "classic", "organic", "fresh", "pure", "local", "simple", "plain", "smart", "kid",
+    "men", "women", "lady", "unisex", "affordable", "expensive", "cheapest",
+}
+_TOKEN = re.compile(r"[^\W_]+")  # words in any script: an Arabic word is a search word, never "no words"
+_AMOUNT = re.compile(r"\d+k")  # "100k": a budget, not a product word
+_ACCENTED, _PLAIN = "áàâäãåéèêëíìîïóòôöõúùûüçñ", "aaaaaaeeeeiiiiooooouuuucn"
+
+
+def fold(text: str | None) -> str:
+    """Lower-case without accents or diacritics: "Café" and "cafe" are the same word."""
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+CANDIDATE_LIMIT = 200
 MAX_CSV_BYTES = 2_000_000
 MAX_CSV_ROWS = 5000
 
 
-def _stem(tok: str) -> str:
-    for suf in ("ies", "es", "s"):
-        if len(tok) > 4 and tok.endswith(suf):
-            return tok[: -len(suf)] + ("y" if suf == "ies" else "")
+def stem(tok: str) -> str:
+    """Light plural stemming whose result is a prefix of the singular: shoes->shoe, dresses->dress, bags->bag,
+    batteries->battery (never shoes->"sho", which would prefix-match "shorts" and "shop")."""
+    if len(tok) > 4 and tok.endswith("ies"):
+        return tok[:-3] + "y"
+    if len(tok) > 4 and tok.endswith(("sses", "shes", "ches", "xes", "zes")):
+        return tok[:-2]
+    if len(tok) > 3 and tok.endswith("s") and not tok.endswith(("ss", "us", "is")):
+        return tok[:-1]
     return tok
 
 
-def query_terms(q: str) -> list[str]:
-    toks = [t for t in _TOKEN.findall(q.lower()) if t not in STOPWORDS and not t.isdigit()]
+def query_words(q: str) -> list[tuple[str, str]]:
+    """(stem, word as typed) for each meaningful query word, in order, without duplicates. Both forms are matched:
+    the stem finds plurals ("bags" -> "bag"), the typed word keeps prefixes intact ("sams" must not become "sam")."""
     seen, out = set(), []
-    for t in toks:
-        s = _stem(t)
-        if s not in seen and len(s) > 1:
+    for tok in _TOKEN.findall(fold(q)):
+        if tok in STOPWORDS or tok.isdigit() or _AMOUNT.fullmatch(tok):
+            continue
+        s = stem(tok)
+        if s not in seen and len(s) > 1 and s not in STOPWORDS:
             seen.add(s)
-            out.append(s)
+            out.append((s, tok))
     return out[:8]
+
+
+def query_terms(q: str) -> list[str]:
+    return [s for s, _ in query_words(q)]
+
+
+def field_tokens(text: str | None) -> set[str]:
+    """Stemmed words of a product field, plus joined short compounds ("T-Shirt" -> "tshirt", "USB-C" -> "usbc")."""
+    raw = _TOKEN.findall(fold(text))
+    toks = {stem(t) for t in raw}
+    toks |= {stem(a + b) for a, b in zip(raw, raw[1:]) if min(len(a), len(b)) <= 2}
+    return toks
+
+
+def term_matches(term: str, tokens: set[str]) -> bool:
+    """A query word matches a field when it is one of its words or (4+ letters) the start of one: "sams" finds
+    "samsung", "phone" finds "phones" — but "phone" never finds "smartphone" or "headphones", and "tea" never "teal"."""
+    return term in tokens or (len(term) >= 4 and any(tok.startswith(term) for tok in tokens))
 
 
 def product_embedding_text(name: str, category: str | None, description: str | None) -> str:
@@ -57,6 +109,8 @@ class SearchHit:
     product: Product
     score: float
     matched_terms: int
+    strong_terms: int = 0  # query words found in the name, category, SKU or attributes (not only the description)
+    missing: list[str] = field(default_factory=list)  # query words this product does not match
 
 
 @dataclass
@@ -193,9 +247,26 @@ class ProductService:
     # Search -------------------------------------------------------------------
     def search(self, query: str, *, max_price: float | None = None, min_price: float | None = None,
                category: str | None = None, in_stock_only: bool = False, limit: int = 5) -> list[SearchHit]:
-        """Hybrid search: Postgres full-text (prefix OR query) + pgvector cosine similarity,
-        then a deterministic re-rank on how many query terms each product covers."""
-        terms = query_terms(query or "")
+        """Catalog search. A product is returned only with lexical evidence for what the customer asked for.
+
+        1. Hard filters, always in SQL: tenant, active, price range, category, stock.
+        2. No meaningful words (e.g. "what do you have under 50k?"): filter-only browse, cheapest first.
+        3. Candidates: full-text prefix match on name/description, or the word inside the name, category, SKU or
+           attributes. Vector similarity is a ranking signal only, never a reason to return a product: the
+           default hash embedding is lexical feature hashing whose collisions score unrelated products higher than
+           real (misspelt) matches ("phone" vs "Rwandan Tea 250g": 0.46).
+        4. Evidence per query word: a word (or a 4+ letter prefix of one) of the name, category, SKU or attributes
+           (what the product IS) or of the description (detail only). A product is returned only when what it is
+           matches a product word — not just a colour/size/material ("black" does not make black tea a "black
+           dress") and not a description that mentions something else ("charger for phones" is not a phone).
+        5. Keep the products matching the most query words, so partial matches only appear when nothing matches
+           every word; each hit reports the words it is missing.
+        6. Order: name/category evidence, text/vector score, price, name. Nothing is ever added to fill an empty
+           result.
+        """
+        words = query_words(query or "")
+        terms = [s for s, _ in words]
+        forms = {s: {s, w} for s, w in words}
         where: list[Any] = [Product.active.is_(True)]
         if max_price is not None:
             where.append(Product.price <= Decimal(str(max_price)))
@@ -207,41 +278,53 @@ class ProductService:
         if category:
             where.append(func.lower(ProductCategory.name).like(f"%{category.lower()}%"))
 
+        if not terms:
+            stmt = (self.products.select(Product, literal(0.0).label("score"))
+                    .outerjoin(cat_join, Product.category_id == cat_join.id)
+                    .where(*where).order_by(Product.price, Product.name, Product.id).limit(limit))
+            return [SearchHit(product=p, score=0.0, matched_terms=0) for p, _ in self.db.execute(stmt).unique().all()]
+
         doc = func.to_tsvector(
             text("'simple'::regconfig"),
             func.coalesce(Product.name, "") + " " + func.coalesce(Product.description, ""),
         )
-        if terms:
-            tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{t}:*" for t in terms))
-            lex = func.ts_rank(doc, tsq)
-            qvec = get_embedder().embed_one(query)
-            vscore = 1 - Product.embedding.cosine_distance(qvec)
-            cat_match = or_(*[func.lower(func.coalesce(ProductCategory.name, "")).like(f"%{t}%") for t in terms])
-            score = (lex * 2 + func.coalesce(vscore, 0)).label("score")
-            stmt = (self.products.select(Product, score)
-                    .outerjoin(cat_join, Product.category_id == cat_join.id)
-                    .where(*where)
-                    .where(or_(doc.op("@@")(tsq), vscore > VECTOR_THRESHOLD, cat_match))
-                    .order_by(text("score DESC")).limit(40))
-        else:
-            # No meaningful terms (e.g. "what do you have under 50k?"): filter-only browse.
-            stmt = (self.products.select(Product, literal(0.0).label("score"))
-                    .outerjoin(cat_join, Product.category_id == cat_join.id)
-                    .where(*where).order_by(Product.price).limit(40))
-        rows = self.db.execute(stmt).unique().all()
+        all_forms = sorted({f for fs in forms.values() for f in fs})
+        tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{f}:*" for f in all_forms))
+        vscore = 1 - Product.embedding.cosine_distance(get_embedder().embed_one(query))
+        score = (func.ts_rank(doc, tsq) * 2 + func.coalesce(vscore, 0)).label("score")
 
-        hits = []
-        for product, score in rows:
-            hay = " ".join(_stem(t) for t in _TOKEN.findall(
-                f"{product.name} {product.description or ''} {product.category.name if product.category else ''} "
-                f"{' '.join(str(v) for v in (product.attributes or {}).values())}".lower()))
-            matched = sum(1 for t in terms if t in hay)
-            hits.append(SearchHit(product=product, score=float(score or 0), matched_terms=matched))
-        if terms and hits:
+        def contains_term(col: Any) -> Any:  # "T-Shirt" -> "tshirt", so compounds and SKUs are candidates too
+            folded = func.translate(func.lower(func.coalesce(col, "")), _ACCENTED, _PLAIN)
+            compact = func.regexp_replace(folded, "[^[:alnum:]]+", "", "g")
+            return or_(*[compact.like(f"%{f}%") for f in all_forms])
+
+        lexical = or_(doc.op("@@")(tsq), contains_term(Product.name), contains_term(ProductCategory.name),
+                      contains_term(Product.sku), contains_term(cast(Product.attributes, Text)))
+        stmt = (self.products.select(Product, score)
+                .outerjoin(cat_join, Product.category_id == cat_join.id)
+                .where(*where).where(lexical)
+                .order_by(text("score DESC")).limit(CANDIDATE_LIMIT))
+
+        anchors = [t for t in terms if t not in MODIFIERS] or terms
+        hits: list[SearchHit] = []
+        for product, s in self.db.execute(stmt).unique().all():
+            strong = field_tokens(" ".join([product.name, product.category.name if product.category else "",
+                                            product.sku or "",
+                                            *(str(v) for v in (product.attributes or {}).values())]))
+            weak = field_tokens(product.description)
+            level = {t: 2 if any(term_matches(f, strong) for f in forms[t])
+                     else 1 if any(term_matches(f, weak) for f in forms[t]) else 0 for t in terms}
+            if not any(level[t] == 2 for t in anchors):
+                continue  # what this product is does not match anything the customer is shopping for
+            hits.append(SearchHit(product=product, score=float(s or 0),
+                                  matched_terms=sum(1 for v in level.values() if v),
+                                  strong_terms=sum(1 for v in level.values() if v == 2),
+                                  missing=[w for s_, w in words if not level[s_]]))
+        if hits:
             best = max(h.matched_terms for h in hits)
-            if best > 0:
-                hits = [h for h in hits if h.matched_terms == best]
-        hits.sort(key=lambda h: (-h.matched_terms, -h.score, float(h.product.price)))
+            hits = [h for h in hits if h.matched_terms == best]
+        hits.sort(key=lambda h: (-h.strong_terms, -h.score, float(h.product.price), h.product.name.lower(),
+                                 str(h.product.id)))
         return hits[:limit]
 
     # CSV import -----------------------------------------------------------------

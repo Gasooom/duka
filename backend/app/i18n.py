@@ -33,6 +33,13 @@ MESSAGES: dict[str, dict[str, str]] = {
     "search_found": _row("Here's what I found ({count}):", "Dore ibyo nabonye ({count}):",
                          "Voici ce que j'ai trouvé ({count}) :", "Hivi ndivyo nilivyopata ({count}):",
                          "إليك ما وجدته ({count}):", "ده اللقيناهو ({count}):"),
+    # Results that match only part of what was asked: said plainly, never presented as what was requested.
+    "search_partial": _row("I couldn't find an exact match. The closest items ({count}):",
+                           "Sinabonye igihuye neza n'ibyo wasabye. Ibyegereye ({count}):",
+                           "Je n'ai pas trouvé de correspondance exacte. Les articles les plus proches ({count}) :",
+                           "Sikupata kinacholingana kabisa. Vilivyo karibu zaidi ({count}):",
+                           "لم أجد تطابقًا تامًا. أقرب المنتجات ({count}):",
+                           "ما لقينا حاجة مطابقة بالضبط. أقرب حاجات لقيناها ({count}):"),
     "in_stock": _row("in stock", "birahari", "en stock", "kipo", "متوفر", "موجود"),
     "out_of_stock": _row("out of stock", "byashize", "en rupture", "kimeisha", "غير متوفر", "خلص"),
     "in_stock_cap": _row("In stock", "Birahari", "En stock", "Kipo", "متوفر", "موجود"),

@@ -1,5 +1,6 @@
 """The generic commerce toolset. Identical for every tenant; behaviour differs only through
 each business's data and configuration."""
+import re
 import uuid
 from typing import Any
 
@@ -7,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 
 from app.core.errors import NotFoundError, ValidationError
-from app.models import Product
+from app.models import Product, ProductCategory
+from app.repositories.repos import ProductRepo
 from app.services.commerce_service import CartService, CheckoutService, DeliveryService, OrderService
 from app.services.conversation_service import ConversationService
 from app.services.knowledge_service import KnowledgeService
@@ -18,7 +20,7 @@ from app.tools.registry import Tool, ToolContext, register
 # ---------------------------------------------------------------- helpers
 
 
-def _product_dict(p: Product, position: int | None = None) -> dict[str, Any]:
+def product_dict(p: Product, position: int | None = None) -> dict[str, Any]:
     d = {"product_id": str(p.id), "name": p.name, "price": float(p.price), "currency": p.currency,
          "in_stock": p.stock_quantity > 0, "stock_quantity": p.stock_quantity, "sku": p.sku,
          "category": p.category.name if p.category else None}
@@ -139,15 +141,43 @@ class HandoffArgs(Args):
 def search_products(ctx: ToolContext, a: SearchArgs) -> dict[str, Any]:
     hits = ProductService(ctx.db, ctx.business_id).search(a.query, max_price=a.max_price, min_price=a.min_price,
                                                           category=a.category, limit=a.limit)
-    products = [_product_dict(h.product, i + 1) for i, h in enumerate(hits)]
-    ConversationService(ctx.db, ctx.business_id).set_state(
-        ctx.conversation, last_products=[{"id": p["product_id"], "name": p["name"]} for p in products])
-    return {"count": len(products), "products": products,
-            "note": None if products else "No matching products in the catalog. Do not suggest items not listed."}
+    products = []
+    for i, h in enumerate(hits):
+        products.append(product_dict(h.product, i + 1))
+        if h.missing:
+            products[-1]["missing"] = h.missing
+    if products:  # positions ("add 2") keep pointing at the last list the customer actually saw
+        ConversationService(ctx.db, ctx.business_id).set_state(
+            ctx.conversation, last_products=[{"id": p["product_id"], "name": p["name"]} for p in products])
+    if not products:
+        # Live runs: models searched "inkweto z'umukara" / "baskets noires" / "تلفون" untranslated, found nothing and
+        # told the customer the shop has no black shoes. Say how to retry, and which categories really exist.
+        note = "No product matched these words. Do not suggest items that are not listed."
+        if ctx.language != "en" or re.search(r"[^\x00-\x7f]", a.query):
+            note += (" Product names are usually in English: if these words are not English, call search_products "
+                     "again with them translated (e.g. 'phone', 'black sneakers') before saying the shop does not "
+                     "sell it.")
+        note += " 'categories' are the shop's real categories: if one fits what the customer wants, search it."
+        return {"count": 0, "products": [], "note": note, "categories": active_categories(ctx)}
+    if any(h.missing for h in hits):
+        note = ("No product matches every word of the search; 'missing' lists the words a product does NOT match. "
+                "Say so, and never describe a product with a word it is missing.")
+    else:
+        note = None
+    return {"count": len(products), "products": products, "note": note}
+
+
+def active_categories(ctx: ToolContext, limit: int = 30) -> list[str]:
+    """Names of the categories that have at least one active product (tenant-scoped through the repository)."""
+    stmt = (ProductRepo(ctx.db, ctx.business_id).select(ProductCategory.name).select_from(Product)
+            .join(ProductCategory, Product.category_id == ProductCategory.id)
+            .where(Product.active.is_(True), ProductCategory.business_id == ctx.business_id)
+            .group_by(ProductCategory.name).order_by(ProductCategory.name).limit(limit))
+    return list(ctx.db.scalars(stmt))
 
 
 def get_product(ctx: ToolContext, a: ProductRefArgs) -> dict[str, Any]:
-    return {"product": _product_dict(resolve_product(ctx, a.product_ref))}
+    return {"product": product_dict(resolve_product(ctx, a.product_ref))}
 
 
 def check_inventory(ctx: ToolContext, a: ProductRefArgs) -> dict[str, Any]:
@@ -329,8 +359,8 @@ for _t in [
     Tool("add_to_cart", "Add a product to the cart.", AddToCartArgs, add_to_cart, mutates=True),
     Tool("remove_from_cart", "Remove a product from the cart.", ProductRefArgs, remove_from_cart, mutates=True),
     Tool("clear_cart", "Empty the cart.", NoArgs, clear_cart, mutates=True),
-    Tool("calculate_cart_total", "Exact subtotal, delivery fee, discount and total.", TotalArgs,
-         calculate_cart_total),
+    Tool("calculate_cart_total", "Exact subtotal, delivery fee, discount and total. Works without a location "
+         "(the delivery fee is then pending).", TotalArgs, calculate_cart_total),
     Tool("calculate_delivery", "Delivery fee and ETA for a location.", DeliveryArgs, calculate_delivery,
          enabled_if=_delivery),
     Tool("prepare_checkout", "When the customer wants to order: prepare the order summary for them to confirm. "

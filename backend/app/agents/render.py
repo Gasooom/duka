@@ -66,7 +66,8 @@ def render_tool_result(tool: str, args: dict[str, Any], r: dict[str, Any], lang:
     if tool == "search_products":
         if not r["products"]:
             return t("search_none", lang)
-        out = [t("search_found", lang, count=r["count"])]
+        partial = any(p.get("missing") for p in r["products"])
+        out = [t("search_partial" if partial else "search_found", lang, count=r["count"])]
         for p in r["products"]:
             stock = t("in_stock" if p["in_stock"] else "out_of_stock", lang)
             out.append(f"{p['position']}. {p['name']} — {fmt(p['price'], p['currency'])} ({stock})")

@@ -5,7 +5,9 @@ Context strategy (keeps tokens low):
   2. deterministic state snapshot (last products shown, cart summary, last order) — cheap DB reads
   3. rolling summary of older messages (only once the conversation is long)
   4. last N customer/assistant messages (truncated)
-Tool results are kept only within the current turn.
+Tool results are kept only within the current turn. The grounding check additionally knows the CURRENT DB facts of
+the products last shown / in the cart, so a follow-up answered from the conversation is verified against today's
+price and stock instead of being rejected.
 """
 import json
 import re
@@ -16,7 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.agents.grounding import build_ledger, verify
+from app.agents.grounding import build_ledger, mentioned_products, verify
 from app.agents.intents import classify_confirmation, wants_human
 from app.agents.language import NAMES
 from app.agents.providers import LLMError, LLMProvider, get_llm_provider
@@ -25,9 +27,9 @@ from app.core.config import settings
 from app.core.errors import DomainError
 from app.core.logging import get_logger, log_event, safe_error
 from app.i18n import error_text, t
-from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message
+from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message, Product
 from app.models.business import AgentConfig as _AgentConfigModel
-from app.repositories.repos import AgentConfigRepo, AgentRunRepo
+from app.repositories.repos import AgentConfigRepo, AgentRunRepo, ProductRepo
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
@@ -71,8 +73,11 @@ def build_system_prompt(business: Business, cfg: AgentConfig, language: str = "e
     rules = [
         "Never invent products, prices, stock, delivery fees, discounts, order status or payment status. "
         "Get every fact from tools.",
-        "For product questions call search_products first. Refer to products by their list position.",
+        "For product questions call search_products first, also before saying the shop does not sell something. "
+        "Refer to products by their list position.",
         "For totals or delivery fees call calculate_cart_total / calculate_delivery. Never do arithmetic yourself.",
+        "The cart needs no address: add items and give the cart total without one (delivery then shows as "
+        "pending). Ask for the delivery address only at checkout or when the customer asks about delivery.",
         "You cannot place orders. When the customer wants to order, call prepare_checkout (first ask for their "
         "delivery address if delivery applies). The system then sends the exact summary itself and places the "
         "order only if the customer replies YES.",
@@ -297,7 +302,10 @@ class AgentEngine:
                 text, outcome.checkout_cart_id = checkout_summary[0], uuid.UUID(checkout_summary[1])
                 steps.append({"type": "checkout_summary", "cart_id": checkout_summary[1]})
             elif text and self.provider.is_llm:
-                violations = verify(text, build_ledger(turn_results, self._state, trigger.content))
+                context = self._context_products(customer, conv)
+                ledger = build_ledger(turn_results, self._state, trigger.content, context_products=context,
+                                      owner_text=self._owner_text())
+                violations = verify(text, ledger)
                 if violations:
                     # Never send unverifiable commerce facts: use the server's own rendering of the tool data.
                     steps.append({"type": "grounding", "violations": [v.__dict__ for v in violations],
@@ -305,7 +313,8 @@ class AgentEngine:
                     log_event(logger, "agent.ungrounded", 30, operation="agent.run", status="rejected",
                               kinds=sorted({v.kind for v in violations}))
                     run.status = "ungrounded"
-                    text = self._render_facts(turn_results, self.language)
+                    text = self._render_facts(turn_results, self.language) or \
+                        self._render_context(text, ledger, context, self.language)
                     unsure = text is None
                     text = text or t("unsure", self.language)
             unsure = unsure or run.status == "error"
@@ -324,6 +333,28 @@ class AgentEngine:
                   llm_calls=run.llm_calls, tools=[s["tool"] for s in steps if s["type"] == "tool"])
         outcome.text, outcome.handed_off = text, handed_off
         return outcome
+
+    def _context_products(self, customer: Customer, conv: Conversation) -> list[dict[str, Any]]:
+        """Current facts (price, stock, active) of the products the customer was last shown or has in the cart,
+        read now from the DB: what a follow-up answered from the conversation is checked against."""
+        ids = {str(p["id"]) for p in (conv.state or {}).get("last_products") or []}
+        cart = CartService(self.db, self.business.id).get_active(customer, conv, create=False)
+        if cart:
+            ids |= {str(i.product_id) for i in cart.items}
+        if not ids:
+            return []
+        products = ProductRepo(self.db, self.business.id).list(where=[Product.id.in_([uuid.UUID(i) for i in ids])])
+        return [{**commerce_tools.product_dict(p), "active": p.active} for p in products]
+
+    def _owner_text(self) -> str:
+        return "\n".join(x for x in (self.business.description, self.cfg.business_rules, self.cfg.system_prompt) if x)
+
+    @staticmethod
+    def _render_context(rejected: str, ledger: Any, context: list[dict[str, Any]], lang: str) -> str | None:
+        """No tool ran this turn: answer with the current facts of the products the rejected reply talked about."""
+        by_name = {d["name"].lower(): d for d in context}
+        named = [by_name[p.name.lower()] for p in mentioned_products(rejected, ledger) if p.name.lower() in by_name]
+        return "\n".join(render_tool_result("get_product", {}, {"ok": True, "product": d}, lang) for d in named) or None
 
     @staticmethod
     def _render_facts(turn_results: list[tuple[str, dict, dict]], lang: str = "en") -> str | None:

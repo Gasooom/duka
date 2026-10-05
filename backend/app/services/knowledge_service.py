@@ -9,19 +9,18 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.errors import ValidationError
 from app.models import KnowledgeChunk, KnowledgeDocument
 from app.repositories.repos import KnowledgeChunkRepo, KnowledgeDocumentRepo
 from app.services.embeddings import get_embedder
-from app.services.product_service import query_terms
+from app.services.product_service import field_tokens, query_terms, term_matches
 
 MAX_DOC_CHARS = 200_000
 CHUNK_CHARS = 700
 CHUNK_OVERLAP = 120
-MIN_SCORE = 0.15
 
 
 def chunk_text(content: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -96,21 +95,29 @@ class KnowledgeService:
         self.docs.delete(self.docs.get_or_404(doc_id))
 
     def search(self, query: str, limit: int = 3) -> list[KnowledgeHit]:
-        qvec = get_embedder().embed_one(query)
+        """A chunk is returned only when it shares a meaningful word with the question (the product-search rule).
+        Vector similarity ranks but never admits: with the default hash embedding it is collision-prone, and an
+        unrelated policy is worse than none — the model would apply it to the customer's question."""
         terms = query_terms(query)
-        vscore = 1 - KnowledgeChunk.embedding.cosine_distance(qvec)
+        if not terms:
+            return []
+        vscore = 1 - KnowledgeChunk.embedding.cosine_distance(get_embedder().embed_one(query))
         doc_tsv = func.to_tsvector(text("'simple'::regconfig"), KnowledgeChunk.content)
-        lex = (func.ts_rank(doc_tsv, func.to_tsquery(text("'simple'::regconfig"),
-                                                       " | ".join(f"{t}:*" for t in terms)))
-               if terms else text("0"))
-        score = (func.coalesce(vscore, 0) + lex).label("score")
+        tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{t}:*" for t in terms))
+        score = (func.coalesce(vscore, 0) + func.ts_rank(doc_tsv, tsq)).label("score")
+        in_title = or_(*[func.lower(KnowledgeDocument.title).like(f"%{t}%") for t in terms])
         stmt = (self.chunks.select(KnowledgeChunk, KnowledgeDocument.title, score)
                 .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
                 .where(KnowledgeDocument.business_id == self.business_id)
-                .order_by(text("score DESC")).limit(limit))
-        hits = []
+                .where(or_(doc_tsv.op("@@")(tsq), in_title))
+                .order_by(text("score DESC")).limit(limit * 10))
+        ranked = []
         for chunk, title, s in self.db.execute(stmt).all():
-            if float(s or 0) >= MIN_SCORE:
-                hits.append(KnowledgeHit(document_title=title, content=chunk.content, score=round(float(s), 3)))
-        return hits
+            words = field_tokens(f"{title} {chunk.content}")
+            matched = sum(1 for t in terms if term_matches(t, words))
+            if matched:
+                ranked.append((-matched, -float(s or 0),
+                               KnowledgeHit(document_title=title, content=chunk.content, score=round(float(s or 0), 3))))
+        ranked.sort(key=lambda r: r[:2])
+        return [hit for _, _, hit in ranked[:limit]]
 
