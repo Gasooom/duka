@@ -6,9 +6,12 @@ class DomainError(Exception):
     status_code = 400
     code = "domain_error"
 
-    def __init__(self, message: str, *, code: str | None = None):
+    def __init__(self, message: str, *, code: str | None = None, params: dict | None = None):
         super().__init__(message)
         self.message = message
+        # `params` are the facts inside the message (name, qty, order number...), so the customer-facing text can
+        # be rendered in the conversation language from the same values (app/i18n.py, keys "err_<code>").
+        self.params = params or {}
         if code:
             self.code = code
 

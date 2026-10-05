@@ -19,19 +19,22 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
    owner's audited manual record** (`POST /api/orders/{id}/payments`: method + evidence, `confirmation_source=owner`).
    The agent can never set `paid`; it can only report a customer's reference as *pending*. `Order.payment_status`
    is changed only in `PaymentService`.
-7. **Orders need an explicit confirmation.** The LLM can only `prepare_checkout`; an order is created only by
-   `CheckoutService.confirm` when a later customer message is an explicit YES to the delivered, unchanged summary.
-   Never assume a delivery zone or address. Never add a tool that creates orders or confirms payments.
-9. **Model text is checked before it is sent.** `agents/grounding.py` verifies every LLM reply against this turn's
-   tool results; on a violation the deterministic render is sent instead. Don't bypass it, and add a regression
-   case to `tests/test_ai_safety.py` for every new kind of fact the agent can state.
-8. **Sensitive actions are audited** (`audit_service.record`): manual payments, voids, order status changes,
-   takeovers. `audit_events` is append-only.
 5. **Webhooks never crash** on LLM/tool failure: fallback message + `agent_runs.status=error`.
 6. **Durable in, outbox out.** Inbound messages are committed to `webhook_events` before the webhook returns 200
    and processed by `workflows/worker.py`. Customer-facing messages go through `send_to_customer` (queues in the
    current transaction) and are sent after commit (`commit_and_deliver` or the worker). Never call an adapter
    directly, and never send before the state the message describes is committed.
+7. **Orders need an explicit confirmation.** The LLM can only `prepare_checkout`; an order is created only by
+   `CheckoutService.confirm` when a later customer message is an explicit YES to the delivered, unchanged summary.
+   Never assume a delivery zone or address. Never add a tool that creates orders or confirms payments.
+8. **Sensitive actions are audited** (`audit_service.record`): manual payments, voids, order status changes,
+   takeovers. `audit_events` is append-only.
+9. **Model text is checked before it is sent.** `agents/grounding.py` verifies every LLM reply against this turn's
+   tool results; on a violation the deterministic render is sent instead. Don't bypass it, and add a regression
+   case to `tests/test_ai_safety.py` for every new kind of fact the agent can state.
+10. **Customer-facing text is localised, facts are not.** Every server-written customer message goes through
+   `app/i18n.py` in the conversation language (`conversation_language(conv, business)`); add new texts there in
+   all six languages (a test enforces it) and never translate names, prices, SKUs, order numbers or owner text.
 
 ## Layout
 ```

@@ -113,8 +113,9 @@ def is_open(hours: dict | None, tz_name: str | None, now: datetime | None = None
     return False
 
 
-def next_opening(hours: dict | None, tz_name: str | None, now: datetime | None = None) -> str | None:
-    """e.g. 'today at 08:00' or 'Mon at 08:00'."""
+def next_opening(hours: dict | None, tz_name: str | None, now: datetime | None = None, lang: str = "en") -> str | None:
+    """e.g. 'today at 08:00' or 'Mon at 08:00' (in `lang`; the time itself is never localised)."""
+    from app.i18n import WEEKDAYS, t
     try:
         schedule = parse_hours(hours)
     except ValueError:
@@ -126,16 +127,17 @@ def next_opening(hours: dict | None, tz_name: str | None, now: datetime | None =
         for start, _end in sorted(schedule.get(day, [])):
             if i == 0 and start <= minute:
                 continue
-            when = "today" if i == 0 else "tomorrow" if i == 1 else DAY_NAMES[day]
-            return f"{when} at {start // 60:02d}:{start % 60:02d}"
+            names = WEEKDAYS.get(lang, WEEKDAYS["en"])
+            when = t("today", lang) if i == 0 else t("tomorrow", lang) if i == 1 else names[day]
+            return t("opening", lang, day=when, time=f"{start // 60:02d}:{start % 60:02d}")
     return None
 
 
-def closed_until(hours: dict | None, tz_name: str | None, now: datetime | None = None) -> str | None:
+def closed_until(hours: dict | None, tz_name: str | None, now: datetime | None = None, lang: str = "en") -> str | None:
     """None when open (or hours unknown); otherwise when the shop opens next, e.g. 'Mon at 08:00'."""
     if is_open(hours, tz_name, now) is not False:
         return None
-    return next_opening(hours, tz_name, now) or "the next opening"
+    return next_opening(hours, tz_name, now, lang) or "-"
 
 
 __all__ = ["closed_until", "is_open", "next_opening", "parse_hours"]

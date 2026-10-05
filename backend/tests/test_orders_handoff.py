@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.agents.intents import classify_confirmation, wants_human
 from app.agents.providers import LLMResponse, ToolCall, set_provider_override
+from app.i18n import t
 from app.integrations.whatsapp.adapters import SendResult, set_adapter_override
 from app.models import AgentRun, Notification, Order
 from tests.conftest import ADDRESS, CapturingAdapter, place_order
@@ -165,18 +166,20 @@ def test_owner_notification_uses_template_when_configured(fashion, db):
 
 
 # ---------------------------------------------------------------- human control
-@pytest.mark.parametrize("text", ["I want to talk to a person", "Can I speak with someone from the shop?",
-                                  "Nshaka kuvugana n'umuntu", "Je veux parler à quelqu'un",
-                                  "Nataka kuongea na mtu"])
-def test_customer_can_ask_for_a_person_in_any_supported_language(fashion, outbox, db, text):
+@pytest.mark.parametrize("text,lang", [("I want to talk to a person", "en"),
+                                       ("Can I speak with someone from the shop?", "en"),
+                                       ("Nshaka kuvugana n'umuntu", "rw"), ("Je veux parler à quelqu'un", "fr"),
+                                       ("Nataka kuongea na mtu", "sw"), ("داير اتكلم مع زول", "ar-SD"),
+                                       ("أريد التحدث مع موظف", "ar")])
+def test_customer_can_ask_for_a_person_in_any_supported_language(fashion, outbox, db, text, lang):
     assert wants_human(text)
     fashion.patch("/api/business/settings", json={"owner_notification_phone": OWNER})
     scripted = Scripted([])  # the LLM must not even be called
     set_provider_override(scripted)
     fashion.send(text)
     conv = fashion.get("/api/conversations").json()[0]
-    assert conv["status"] == "human" and conv["needs_attention"] is True
-    assert "passed your conversation to our team" in _to_customer(outbox)[-1]
+    assert conv["status"] == "human" and conv["needs_attention"] is True and conv["language"] == lang
+    assert _to_customer(outbox)[-1] == t("handoff", lang)  # answered in the customer's language
     assert any("needs a person" in b for b in _to_customer(outbox, OWNER))
     assert scripted.seen == []
 
@@ -201,8 +204,8 @@ def test_takeover_pauses_ai_until_explicitly_returned(fashion, outbox, db):
     runs_before = db.query(AgentRun).count()
     assert fashion.post(f"/api/conversations/{conv['id']}/handoff").json()["status"] == "human"
     n = len(outbox.sent)
-    for t in ("hello?", "add 1", "yes", "I want a refund"):
-        fashion.send(t)
+    for text in ("hello?", "add 1", "yes", "I want a refund"):
+        fashion.send(text)
     assert len(outbox.sent) == n and db.query(AgentRun).count() == runs_before  # AI fully paused
     detail = fashion.get(f"/api/conversations/{conv['id']}").json()
     assert [m["content"] for m in detail["messages"] if m["role"] == "customer"][-4:] == \

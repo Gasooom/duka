@@ -24,19 +24,27 @@ from app.core.errors import ValidationError
 from app.core.logging import bind_context, clear_context, get_logger, log_event, log_operation, safe_error
 from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
+from app.i18n import media_label, t
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
-from app.models import Business, Message, WebhookEvent, WhatsAppAccount
+from app.models import Business, Message, Product, ProductCategory, WebhookEvent, WhatsAppAccount
 from app.repositories.repos import SettingsRepo
 from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
 from app.services.messaging_service import deliver_outbox, notify_owner, send_to_customer, take_outbox
-from app.workflows.handoff import ai_paused_reply, handoff_reply, request_human
+from app.workflows.handoff import ai_paused_reply, conversation_language, handoff_reply, request_human
 
 logger = get_logger(__name__)
 IGNORED_TYPES = {"reaction", "system", "ephemeral"}
-MEDIA_LABELS = {"audio": "voice notes", "voice": "voice notes", "image": "photos", "video": "videos",
-                "document": "documents", "sticker": "stickers", "location": "shared locations",
-                "contacts": "contact cards"}
+
+
+def language_ignore_terms(db: Session, business: Business, customer) -> set[str]:
+    """Words that say nothing about the customer's language: the catalog's product and category names, the shop's
+    and the customer's names."""
+    names = set(db.scalars(select(Product.name).where(Product.business_id == business.id)))
+    names |= set(db.scalars(select(ProductCategory.name).where(ProductCategory.business_id == business.id)))
+    names |= {business.name, customer.name or ""}
+    terms = {n.lower() for n in names if n}
+    return terms | {w for n in terms for w in n.split() if len(w) >= 4}
 RETRY_DELAYS_SECONDS = (2, 10, 30, 120)
 # Meta status webhooks can arrive out of order; never move a message backwards (read -> delivered).
 _STATUS_RANK = {"queued": 0, "sending": 1, "retry": 1, "sent": 2, "simulated": 2, "delivered": 3, "read": 4}
@@ -239,6 +247,9 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         return ProcessResult(status="duplicate", business_id=business.id, conversation_id=conv.id)
     # Lock the conversation row so concurrent messages from one customer are handled in order.
     conv = convs.get(conv.id, for_update=True)
+    if text_:  # before any routing, so even paused/human conversations show the customer's current language
+        convs.update_language(conv, inbound, text_, language_ignore_terms(db, business, customer))
+    lang = conversation_language(conv, business)
 
     if conv.status == "human":
         conv.needs_attention = True
@@ -250,7 +261,7 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         # one acknowledgement per waiting conversation and the owner one alert.
         if not conv.needs_attention:
             conv.needs_attention = True
-            send_to_customer(db, business.id, conv, ai_paused_reply(business), metadata={"event": "ai_paused"})
+            send_to_customer(db, business.id, conv, ai_paused_reply(business, lang), metadata={"event": "ai_paused"})
             notify_owner(db, business.id, "message_waiting",
                          f"💬 New WhatsApp message from {customer.name or '+' + customer.whatsapp_number} while the "
                          f"assistant is paused: {text_[:200] or '[' + msg.type + ']'}",
@@ -263,13 +274,13 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
     if not text_:
         if msg.type in IGNORED_TYPES:  # reactions etc.: nothing to answer
             return ProcessResult(status="ignored", business_id=business.id, conversation_id=conv.id)
-        label = MEDIA_LABELS.get(msg.type, "this kind of message")
         if business.human_handoff_enabled:
             # No speech-to-text / vision in the MVP: never guess what a voice note or photo says.
-            request_human(db, business, conv, f"Customer sent {label}")
-            reply = f"I can't open {label} yet. " + handoff_reply(business).replace("conversation", "message", 1)
+            request_human(db, business, conv, f"Customer sent {media_label(msg.type, 'en')}")
+            reply = t("media_unsupported", lang, label=media_label(msg.type, lang)) + \
+                handoff_reply(business, lang, message=True)
         else:
-            reply = "Sorry, I can only read text messages for now. Please type your request."
+            reply = t("text_only", lang)
         send_to_customer(db, business.id, conv, reply)
         return ProcessResult(status="unsupported", business_id=business.id, conversation_id=conv.id, reply=reply)
 

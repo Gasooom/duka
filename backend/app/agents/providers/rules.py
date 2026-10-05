@@ -64,7 +64,8 @@ class RulesProvider(LLMProvider):
                  temperature: float = 0.2, timeout: float | None = None) -> LLMResponse:
         allowed = {t["function"]["name"] for t in tools}
         if messages and messages[-1]["role"] == "tool":
-            return LLMResponse(content=self._render(messages), model="rules")
+            return LLMResponse(content=self._render(messages, self._state(messages).get("language", "en")),
+                               model="rules")
         user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "") or ""
         state = self._state(messages)
         call = self._intent(user, state, allowed)
@@ -152,7 +153,7 @@ class RulesProvider(LLMProvider):
         return "search_products", args
 
     @staticmethod
-    def _render(messages: list[dict[str, Any]]) -> str:
+    def _render(messages: list[dict[str, Any]], lang: str = "en") -> str:
         # Render the tool results produced in this turn (after the last assistant tool_calls message).
         idx = max(i for i, m in enumerate(messages) if m["role"] == "assistant" and m.get("tool_calls"))
         calls = {c["id"]: c for c in messages[idx]["tool_calls"]}
@@ -163,5 +164,5 @@ class RulesProvider(LLMProvider):
             call = calls.get(m["tool_call_id"], {})
             fn = call.get("function", {})
             parts.append(render_tool_result(fn.get("name", ""), json.loads(fn.get("arguments") or "{}"),
-                                            json.loads(m["content"])))
+                                            json.loads(m["content"]), lang))
         return "\n\n".join(parts)

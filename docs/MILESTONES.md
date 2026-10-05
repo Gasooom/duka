@@ -426,6 +426,45 @@ Blocked: `python -m evals.run --provider openai_compat --include-llm-cases --out
 needs the LLM key. That run (plus native-speaker review of the Kinyarwanda/French/Swahili transcripts) is what
 measures real model quality and the grounding false-positive rate; keep its report as the real-model baseline.
 
+### Feature — Conversation language detection + persistent language state · COMPLETE (offline) · real-model quality BLOCKED (LLM key) · translations need native review
+
+- **State:** `conversations.language_code` (en | rw | fr | sw | ar | ar-SD), `language_confidence`,
+  `language_updated_at` (migration 0008); each inbound message keeps its own detection in its metadata; the inbox
+  shows the language.
+- **Detection** (`app/agents/language.py`): offline and deterministic — nothing is sent to any provider. Product,
+  category, shop and customer names, numbers, SKUs and order numbers are ignored. Arabic script selects the
+  Arabic family; `ar` vs `ar-SD` is decided by lexical markers (Sudanese داير، متين، شنو، ده، زول، عايز… vs MSA
+  أريد، هل، هذا، لديكم، يتوفر…), never by script alone.
+- **Switching rule:** the last *confident* detection wins (confidence ≥ 0.5 and ≥ 2 distinct signals); weak
+  detections, isolated words and code-switching (the message still contains a distinctive word of the current
+  language) keep the current language; an Arabic message without dialect markers keeps the current Arabic variant
+  (neither variant is forced). No detection → existing language → business language.
+- **AI:** the system prompt states the conversation language explicitly, with a rule per language (Sudanese:
+  keep the dialect, never switch to MSA) and an instruction to copy names, SKUs, order numbers and prices exactly.
+- **Server-written messages in the conversation language** (`app/i18n.py`, 6 languages, English unchanged):
+  tool renders (also the grounding fallback), checkout summary and YES prompt, order confirmation, owner status
+  updates (accepted + payment instructions, ready, on the way, delivered, cancelled + refund note), manual and
+  provider payment messages, handoff (incl. after hours, with localised opening times), voice-note/media replies,
+  AI-paused acknowledgement, greeting, fallback, clarifying question, and user-facing errors (by error code).
+  Facts are inserted unchanged; a test enforces that every message exists in every language with identical
+  placeholders, and that summaries in all six languages carry identical prices, quantities, names and address.
+- **Arabic made safe end to end:** Arabic YES/NO (نعم، ايوه، تمام… / لا، الغي…; "ايوه بس غير المقاس" is not a
+  confirmation) and Arabic "talk to a person" now work (the normaliser used to strip non-Latin text); the grounding
+  check converts Arabic-Indic digits (٩٥٬٠٠٠) before verifying — previously such a price bypassed it — and knows
+  Arabic money/total/paid/status/availability phrasing.
+- Evidence: `tests/test_language.py` (50 cases, A–M: 15 detection examples incl. all given Sudanese and MSA
+  sentences, variant decided by words, weak dialect does not flip, 9 isolated-word cases, product names, 5
+  code-switching cases, Sudanese→English only on the confident message, English→Sudanese, business-language
+  fallback, language passed to the model, Sudanese order summary + confirmation + owner updates + payment message,
+  after-hours handoff in rw/ar-SD/fr/sw, voice note and AI pause in Swahili, Arabic yes/no on a summary, facts
+  identical in six languages, completeness of translations, Arabic-digit fabricated price caught, correct Arabic
+  reply passes). Eval suite v1.1.0: +11 cases (7 language-state, 2 Arabic handoff, 2 real-model) — rules 42/42,
+  adversarial 42/42 (9 need a real LLM). Live on the Docker stack: ar-SD kept on "ok", switch to English on a
+  confident sentence, Sudanese handoff reply.
+- Not claimed: real-model multilingual quality (run `python -m evals.run --provider openai_compat` when a key
+  exists) and translation quality — rw, sw and ar-SD wording must be reviewed by native speakers before the pilot.
+  The offline rules engine cannot search with Arabic/Kinyarwanda queries (it browses); a real model translates them.
+
 ### M11 — Real pilot (one Rwandan merchant) · NOT STARTED · BLOCKED on M2–M10 and a merchant
 
 ### M12 — Multi-store validation (2–5 stores) · NOT STARTED · BLOCKED on M11

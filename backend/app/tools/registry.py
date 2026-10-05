@@ -24,6 +24,7 @@ class ToolContext:
     business: Business
     customer: Customer
     conversation: Conversation
+    language: str = "en"  # conversation language: server-written texts (e.g. the checkout summary) use it
 
     @property
     def business_id(self) -> uuid.UUID:
@@ -82,7 +83,8 @@ def execute_tool(ctx: ToolContext, name: str, raw_args: dict[str, Any] | None) -
         nested.rollback()
         # Business-rule errors ("Only 3 in stock", "Please share your address") are written for customers and
         # may be shown verbatim; internal ones (unknown tool, invalid arguments, crashes) are not.
-        result = {"ok": False, "error": exc.message, "user_facing": True}
+        result = {"ok": False, "error": exc.message, "user_facing": True, "error_code": exc.code,
+                  "error_params": exc.params}
     except Exception as exc:  # never let a tool crash the conversation
         nested.rollback()
         log_event(logger, "tool.crash", 40, operation=f"tool.{name}", status="error", error=repr(exc)[:300])

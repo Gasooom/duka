@@ -345,6 +345,11 @@ class Harness:
                 f.append(f"order total {orders[-1].total if orders else None}, expected {exp['order_total']}")
             if "payment_status" in exp and (not orders or orders[-1].payment_status != exp["payment_status"]):
                 f.append(f"payment status {orders[-1].payment_status if orders else None}, expected {exp['payment_status']}")
+            if "language" in exp and (conv.language_code if conv else None) != exp["language"]:
+                f.append(f"conversation language {conv.language_code if conv else None}, expected {exp['language']}")
+            # Product names and prices stay as in the catalog, so check for Arabic wording, not an Arabic majority.
+            if exp.get("reply_script") == "arabic" and len(re.findall(r"[ء-ي]", reply)) < 10:
+                f.append("reply is not written in Arabic")
             if "handoff" in exp and bool(conv and conv.status == "human") != exp["handoff"]:
                 f.append(f"handoff={conv.status if conv else None}, expected {'human' if exp['handoff'] else 'ai'}")
             if "pending_summary" in exp:

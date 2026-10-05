@@ -18,27 +18,42 @@ from sqlalchemy.orm import Session
 
 from app.agents.grounding import build_ledger, verify
 from app.agents.intents import classify_confirmation, wants_human
+from app.agents.language import NAMES
 from app.agents.providers import LLMError, LLMProvider, get_llm_provider
 from app.agents.render import render_tool_result
 from app.core.config import settings
 from app.core.errors import DomainError
 from app.core.logging import get_logger, log_event, safe_error
+from app.i18n import error_text, t
 from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message
+from app.models.business import AgentConfig as _AgentConfigModel
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
 from app.tools.registry import ToolContext, execute_tool, tools_for
-from app.workflows.handoff import handoff_reply, request_human
+from app.workflows.handoff import conversation_language, handoff_reply, request_human
 from app.workflows.orders import order_placed_text, place_confirmed_order
 
 logger = get_logger(__name__)
-GREETING_RE = re.compile(r"^\s*(hi|hello|hey|hola|bonjour|muraho|mwaramutse|habari|good (morning|afternoon|evening))"
-                         r"[\s!.,]*(there)?[\s!.]*$", re.I)
+GREETING_RE = re.compile(r"^\s*(hi|hello|hey|hola|bonjour|salut|muraho|mwaramutse|habari|jambo|"
+                         r"good (morning|afternoon|evening)|السلام عليكم|سلام عليكم|مرحبا|مرحبًا|اهلا|أهلا)"
+                         r"[\s!.,،؟]*(there|ورحمة الله)?[\s!.،]*$", re.I)
 MAX_MSG_CHARS = 600
 MAX_TOOL_RESULT_CHARS = 3500
-UNSURE_REPLY = ("I want to be sure I give you correct information. Could you tell me which product or order you "
-                "mean? You can also ask to talk to our team.")
+DEFAULT_GREETING = _AgentConfigModel.__table__.c.greeting.default.arg
+DEFAULT_FALLBACK = _AgentConfigModel.__table__.c.fallback_message.default.arg
+
+# How the model must write in each conversation language (the language comes from conversation state).
+LANGUAGE_RULES = {
+    "en": "Reply in English.",
+    "rw": "Reply in Kinyarwanda.",
+    "fr": "Reply in French.",
+    "sw": "Reply in Swahili.",
+    "ar": "Reply in natural Arabic, matching the customer's register.",
+    "ar-SD": "Reply in Sudanese Arabic, the way the customer writes (for example داير، شنو، متين، ده، كدا). Keep "
+             "the Sudanese dialect; do not switch to Modern Standard Arabic.",
+}
 
 
 @dataclass
@@ -52,7 +67,7 @@ class AgentOutcome:
     order_id: uuid.UUID | None = None
 
 
-def build_system_prompt(business: Business, cfg: AgentConfig) -> str:
+def build_system_prompt(business: Business, cfg: AgentConfig, language: str = "en") -> str:
     rules = [
         "Never invent products, prices, stock, delivery fees, discounts, order status or payment status. "
         "Get every fact from tools.",
@@ -75,9 +90,11 @@ def build_system_prompt(business: Business, cfg: AgentConfig) -> str:
     parts = [
         f"You are the WhatsApp shopping assistant for {business.name} ({business.business_type}).",
         business.description or "",
-        f"Tone: {cfg.tone}. Reply in the customer's language (customers may write English, Kinyarwanda, French "
-        f"or Swahili, or mix them); default to {cfg.language}. Keep replies short for WhatsApp: plain text, short "
-        "numbered lists, no markdown tables.",
+        f"Tone: {cfg.tone}. Keep replies short for WhatsApp: plain text, short numbered lists, no markdown tables.",
+        f"CONVERSATION LANGUAGE: {NAMES.get(language, language)} ({language}). {LANGUAGE_RULES.get(language, '')} "
+        "If the customer clearly switches to another language, reply in their new language. Never translate or "
+        "change product names, SKUs, order numbers, phone numbers or prices: copy prices exactly as the tools "
+        "return them (for example 'RWF 95,000', with Western digits).",
         f"Currency: {business.currency}. Delivery: {'available' if business.delivery_enabled else 'pickup only'}. "
         f"Online payment: {'mobile money' if business.payment_enabled else 'not available'}.",
         "RULES:\n- " + "\n- ".join(rules),
@@ -96,6 +113,7 @@ class AgentEngine:
         self.provider = provider or get_llm_provider()
         self.convs = ConversationService(db, business.id)
         self._state: dict[str, Any] = {}
+        self.language = business.language or "en"
         repo = AgentConfigRepo(db, business.id)
         self.cfg = repo.first() or repo.add()
 
@@ -161,9 +179,11 @@ class AgentEngine:
 
     def build_messages(self, customer: Customer, conv: Conversation) -> list[dict[str, Any]]:
         snapshot, state = self._state_snapshot(customer, conv)
-        messages: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt(self.business, self.cfg)},
+        messages: list[dict[str, Any]] = [{"role": "system",
+                                           "content": build_system_prompt(self.business, self.cfg, self.language)},
                                           {"role": "system", "content": snapshot}]
         if not self.provider.is_llm:
+            state = {**state, "language": self.language}
             messages.append({"role": "system", "content": "STATE_JSON:" + json.dumps(state, default=str)})
         if conv.summary:
             messages.append({"role": "system", "content": f"Earlier conversation summary: {conv.summary}"})
@@ -171,8 +191,23 @@ class AgentEngine:
         return messages
 
     # ------------------------------------------------------------------ run
+    def _greeting(self) -> str:
+        """The owner's greeting when the customer speaks the language it was written in, else a localised one."""
+        own_language = self.cfg.language or self.business.language
+        if self.cfg.greeting and self.cfg.greeting != DEFAULT_GREETING and self.language == own_language:
+            return self.cfg.greeting
+        return t("greeting", self.language, shop=self.business.name)
+
+    def _fallback(self) -> str:
+        own_language = self.cfg.language or self.business.language
+        if self.cfg.fallback_message and self.cfg.fallback_message != DEFAULT_FALLBACK \
+                and self.language == own_language:
+            return self.cfg.fallback_message
+        return t("fallback", self.language)
+
     def run(self, customer: Customer, conv: Conversation, trigger: Message) -> AgentOutcome:
         start = time.perf_counter()
+        self.language = conversation_language(conv, self.business)
         run = AgentRunRepo(self.db, self.business.id).add(
             conversation_id=conv.id, customer_id=customer.id, trigger_message_id=trigger.id,
             provider=self.provider.name, model=self.cfg.model or (settings.llm_model if self.provider.is_llm else "rules"),
@@ -195,7 +230,7 @@ class AgentEngine:
             handed_off = outcome.handed_off
         # Cost control: a bare greeting never needs the LLM.
         elif GREETING_RE.match(trigger.content or ""):
-            text = self.cfg.greeting
+            text = self._greeting()
             run.status = "fast_path"
             steps.append({"type": "fast_path", "reason": "greeting"})
         else:
@@ -203,7 +238,8 @@ class AgentEngine:
                 self._maybe_summarize(conv)
                 messages = self.build_messages(customer, conv)
                 tool_schemas = [t.schema() for t in tools_for(self.business)]
-                ctx = ToolContext(db=self.db, business=self.business, customer=customer, conversation=conv)
+                ctx = ToolContext(db=self.db, business=self.business, customer=customer, conversation=conv,
+                                  language=self.language)
                 tool_calls_made = 0
                 for _ in range(settings.agent_max_tool_iterations):
                     remaining = deadline - time.monotonic()
@@ -269,15 +305,15 @@ class AgentEngine:
                     log_event(logger, "agent.ungrounded", 30, operation="agent.run", status="rejected",
                               kinds=sorted({v.kind for v in violations}))
                     run.status = "ungrounded"
-                    text = self._render_facts(turn_results)
+                    text = self._render_facts(turn_results, self.language)
                     unsure = text is None
-                    text = text or UNSURE_REPLY
+                    text = text or t("unsure", self.language)
             unsure = unsure or run.status == "error"
             handed_off = self._track_uncertainty(conv, unsure, steps) or handed_off
             if handed_off and unsure:
-                text = handoff_reply(self.business)
+                text = handoff_reply(self.business, self.language)
         if not text:
-            text = self.cfg.fallback_message
+            text = self._fallback()
         run.steps = steps
         run.response_text = text
         run.prompt_tokens = prompt_tokens or None
@@ -290,12 +326,12 @@ class AgentEngine:
         return outcome
 
     @staticmethod
-    def _render_facts(turn_results: list[tuple[str, dict, dict]]) -> str | None:
+    def _render_facts(turn_results: list[tuple[str, dict, dict]], lang: str = "en") -> str | None:
         """Deterministic reply from this turn's tool results (the same renderer the offline engine uses)."""
         parts: dict[str, str] = {}
         for name, args, result in turn_results:
             if name != "handoff_to_human" and (result.get("ok") or result.get("user_facing")):
-                parts[name] = render_tool_result(name, args, result)
+                parts[name] = render_tool_result(name, args, result, lang)
         return "\n\n".join(parts.values()) or None
 
     def _track_uncertainty(self, conv: Conversation, unsure: bool, steps: list[dict[str, Any]]) -> bool:
@@ -308,6 +344,9 @@ class AgentEngine:
             steps.append({"type": "handoff", "reason": "repeated uncertainty"})
             return True
         return False
+
+    def _error(self, exc: DomainError) -> str:
+        return error_text(exc.code, exc.params, exc.message, self.language)
 
     def _deterministic_turn(self, customer: Customer, conv: Conversation, trigger: Message,
                             outcome: AgentOutcome) -> tuple[str, str, dict[str, Any]] | None:
@@ -323,28 +362,30 @@ class AgentEngine:
                     checkout.cancel(customer)
                     try:
                         with self.db.begin_nested():
-                            summary = checkout.prepare(customer, conv)
+                            summary = checkout.prepare(customer, conv, language=self.language)
                     except DomainError as exc2:
-                        return f"{exc.message} {exc2.message}", "checkout_changed", {"reason": exc.message}
+                        return (f"{self._error(exc)} {self._error(exc2)}", "checkout_changed",
+                                {"reason": exc.message})
                     outcome.checkout_cart_id = summary.cart_id
-                    return (f"{exc.message} Here is the updated summary:\n\n{summary.text}", "checkout_changed",
-                            {"reason": exc.message})
+                    return (t("updated_summary", self.language, reason=self._error(exc), summary=summary.text),
+                            "checkout_changed", {"reason": exc.message})
                 except DomainError as exc:
-                    return f"Sorry — I couldn't place the order: {exc.message}", "checkout_failed", {"reason": exc.message}
+                    return (t("could_not_place", self.language, reason=self._error(exc)), "checkout_failed",
+                            {"reason": exc.message})
                 outcome.order_id = order.id
                 self.convs.set_state(conv, last_order=order.order_number)
-                return order_placed_text(order, self.business), "order_confirmed", {"order_number": order.order_number}
+                return (order_placed_text(order, self.business, self.language), "order_confirmed",
+                        {"order_number": order.order_number})
             if answer == "no":
                 checkout.cancel(customer)
-                return ("No problem — the order was not placed. What would you like to change?",
-                        "checkout_declined", {})
+                return t("declined", self.language), "checkout_declined", {}
         if wants_human(trigger.content):
             if self.business.human_handoff_enabled:
                 request_human(self.db, self.business, conv, "Customer asked for a person")
                 outcome.handed_off = True
-                return handoff_reply(self.business), "handoff", {"reason": "customer asked for a person"}
-            contact = f" You can reach us at {self.business.phone}." if self.business.phone else ""
-            return (f"Our team isn't available on this chat right now.{contact}", "handoff_unavailable",
+                return handoff_reply(self.business, self.language), "handoff", {"reason": "customer asked for a person"}
+            contact = t("contact_us", self.language, phone=self.business.phone) if self.business.phone else ""
+            return (t("handoff_unavailable", self.language) + contact, "handoff_unavailable",
                     {"reason": "handoff disabled"})
         return None
 

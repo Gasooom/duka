@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { when } from "@/lib/api";
-import { Badge, Empty, ErrorNote, PageHeader, useApi } from "@/components/ui";
+import { Badge, Empty, ErrorNote, LanguageTag, PageHeader, useApi } from "@/components/ui";
 
 function Inner() {
   const params = useSearchParams();
@@ -34,6 +34,7 @@ function Inner() {
                       <span className="font-medium">{c.customer.name || "Customer"}</span>
                       <span className="font-mono text-xs text-ink-mute">+{c.customer.whatsapp_number}</span>
                       <Badge value={c.status} />
+                      <LanguageTag code={c.language} />
                       {c.needs_attention && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900">needs attention</span>}
                     </div>
                     <div className="mt-0.5 truncate text-sm text-ink-mute">

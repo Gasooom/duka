@@ -34,6 +34,7 @@ def get_customer(customer_id: uuid.UUID, ctx: TenantContext = Depends(get_tenant
 
 def _conv_summary(conv, last) -> dict:
     return {"id": str(conv.id), "status": conv.status, "needs_attention": conv.needs_attention,
+            "language": conv.language_code, "language_confidence": conv.language_confidence,
             "handoff_reason": conv.handoff_reason,
             "customer": {"id": str(conv.customer.id), "name": conv.customer.name,
                          "whatsapp_number": conv.customer.whatsapp_number},

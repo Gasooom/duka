@@ -66,6 +66,8 @@ class DeliveryQuote:
     estimated_time: str | None = None
     matched_location: bool = False
     message: str | None = None
+    code: str | None = None          # i18n error code for the customer-facing message
+    params: dict = field(default_factory=dict)
 
 
 class DeliveryService:
@@ -90,14 +92,17 @@ class DeliveryService:
     def quote(self, location: str | None) -> DeliveryQuote:
         business = self.db.get(Business, self.business_id)
         if not business.delivery_enabled:
-            return DeliveryQuote(available=False, message="Delivery is not offered; orders are for pickup.")
+            return DeliveryQuote(available=False, message="Delivery is not offered; orders are for pickup.",
+                                 code="pickup_only")
         if not location:
-            return DeliveryQuote(available=False, message="Please share your delivery location to calculate the fee.")
+            return DeliveryQuote(available=False, message="Please share your delivery location to calculate the fee.",
+                                 code="need_location")
         zone = self.match_zone(location)
         if zone is None:
             names = ", ".join(z.name for z in self.zones.list(where=[DeliveryZone.active.is_(True)])) or "none"
             return DeliveryQuote(available=False,
-                                 message=f"No delivery zone covers '{location}'. Available zones: {names}.")
+                                 message=f"No delivery zone covers '{location}'. Available zones: {names}.",
+                                 code="no_delivery_zone", params={"location": location, "zones": names})
         return DeliveryQuote(available=True, zone_id=str(zone.id), zone_name=zone.name, fee=zone.fee,
                              estimated_time=zone.estimated_time, matched_location=True)
 
@@ -128,7 +133,10 @@ class CartTotals:
     delivery_note: str | None = None
     # True when delivery applies but no zone is known yet: `total` then EXCLUDES delivery.
     delivery_pending: bool = False
+    delivery_note_code: str | None = None     # i18n code of delivery_note ("delivery_pending" or a quote code)
+    delivery_note_params: dict = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
+    issue_details: list[dict] = field(default_factory=list)  # [{"name", "qty", "active"}] for localised rendering
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -169,15 +177,17 @@ class CartService:
         if quantity < 1:
             raise ValidationError("Quantity must be at least 1")
         if not product.active:
-            raise ValidationError(f"{product.name} is not available")
+            raise ValidationError(f"{product.name} is not available", code="product_unavailable",
+                                  params={"name": product.name})
         settings = SettingsRepo(self.db, self.business_id).first()
         max_q = settings.max_order_quantity if settings else 20
         item = self.items.first(CartItem.cart_id == cart.id, CartItem.product_id == product.id)
         new_qty = (item.quantity if item else 0) + quantity
         if new_qty > max_q:
-            raise ValidationError(f"Maximum {max_q} units per product")
+            raise ValidationError(f"Maximum {max_q} units per product", code="max_quantity", params={"max": max_q})
         if new_qty > product.stock_quantity:
-            raise ValidationError(f"Only {product.stock_quantity} unit(s) of {product.name} in stock")
+            raise ValidationError(f"Only {product.stock_quantity} unit(s) of {product.name} in stock",
+                                  code="out_of_stock", params={"qty": product.stock_quantity, "name": product.name})
         if item:
             item.quantity = new_qty
         else:
@@ -189,13 +199,15 @@ class CartService:
     def set_quantity(self, cart: Cart, product_id: uuid.UUID, quantity: int) -> None:
         item = self.items.first(CartItem.cart_id == cart.id, CartItem.product_id == product_id)
         if not item:
-            raise NotFoundError("That product is not in the cart")
+            raise NotFoundError("That product is not in the cart", code="not_in_cart")
         if quantity <= 0:
             self.items.delete(item)
         else:
             product = self.products.get_or_404(product_id)
             if quantity > product.stock_quantity:
-                raise ValidationError(f"Only {product.stock_quantity} unit(s) of {product.name} in stock")
+                raise ValidationError(f"Only {product.stock_quantity} unit(s) of {product.name} in stock",
+                                      code="out_of_stock",
+                                      params={"qty": product.stock_quantity, "name": product.name})
             item.quantity = quantity
         self.db.flush()
         self.db.refresh(cart)
@@ -223,6 +235,7 @@ class CartService:
                                     available_stock=p.stock_quantity))
             if not ok:
                 t.issues.append(f"{p.name}: only {p.stock_quantity} in stock" if p.active else f"{p.name} is unavailable")
+                t.issue_details.append({"name": p.name, "qty": p.stock_quantity, "active": p.active})
             t.subtotal += line_total
         if business.delivery_enabled and t.lines:
             delivery = DeliveryService(self.db, self.business_id)
@@ -234,7 +247,7 @@ class CartService:
                     cart.delivery_zone_id = zone.id  # remembered for the quote; the address comes at checkout
                     self.db.flush()
                 else:
-                    t.delivery_note = q.message
+                    t.delivery_note, t.delivery_note_code, t.delivery_note_params = q.message, q.code, q.params
             elif cart.delivery_zone_id:
                 zone = delivery.zones.get(cart.delivery_zone_id)
             if zone:
@@ -242,6 +255,7 @@ class CartService:
                 t.delivery_zone = zone.name
             else:
                 t.delivery_pending = True
+                t.delivery_note_code = t.delivery_note_code or "delivery_pending"
                 t.delivery_note = t.delivery_note or ("Delivery fee depends on your area. "
                                                       "Share your delivery location for the exact total.")
         t.total = t.subtotal + t.delivery_fee - t.discount
@@ -267,19 +281,22 @@ def _fingerprint(totals: CartTotals, cart: Cart) -> str:
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
 
-def render_summary(totals: CartTotals, delivery_address: str | None) -> str:
+def render_summary(totals: CartTotals, delivery_address: str | None, lang: str = "en") -> str:
+    """The exact summary the customer confirms. Wording follows the conversation language; every fact (names,
+    quantities, prices, totals, address) is formatted identically in all languages."""
+    from app.i18n import t
     cur = totals.currency
-    lines = ["🧾 Order summary — please check:"]
+    lines = [t("summary_title", lang)]
     for i, line in enumerate(totals.lines, 1):
         lines.append(f"{i}. {line.name} x{line.quantity} @ {cur} {money(line.unit_price)} = {cur} {money(line.line_total)}")
-    lines.append(f"Subtotal: {cur} {money(totals.subtotal)}")
+    lines.append(f"{t('subtotal', lang)}: {cur} {money(totals.subtotal)}")
     if totals.delivery_zone:
-        lines.append(f"Delivery ({totals.delivery_zone}): {cur} {money(totals.delivery_fee)}")
+        lines.append(f"{t('delivery', lang)} ({totals.delivery_zone}): {cur} {money(totals.delivery_fee)}")
     if totals.discount:
-        lines.append(f"Discount: -{cur} {money(totals.discount)}")
-    lines.append(f"Total: {cur} {money(totals.total)}")
-    lines.append(f"Deliver to: {delivery_address}" if delivery_address else "Pickup at the shop")
-    lines.append("Reply YES to confirm this order, or tell me what to change.")
+        lines.append(f"{t('discount', lang)}: -{cur} {money(totals.discount)}")
+    lines.append(f"{t('total', lang)}: {cur} {money(totals.total)}")
+    lines.append(t("deliver_to", lang, address=delivery_address) if delivery_address else t("pickup", lang))
+    lines.append(t("confirm_prompt", lang))
     return "\n".join(lines)
 
 
@@ -293,11 +310,11 @@ class CheckoutService:
         self.carts = CartService(db, business_id)
 
     def prepare(self, customer: Customer, conv: Conversation, *, delivery_address: str | None = None,
-                notes: str | None = None) -> CheckoutSummary:
+                notes: str | None = None, language: str = "en") -> CheckoutSummary:
         business = self.db.get(Business, self.business_id)
         cart = self.carts.get_active(customer, conv, create=False)
         if cart is None or not cart.items:
-            raise ValidationError("The cart is empty. Add products before checking out.")
+            raise ValidationError("The cart is empty. Add products before checking out.", code="cart_empty")
         if business.delivery_enabled:
             address = (delivery_address or "").strip() or (cart.delivery_address or "")
             if len(address) < 3:
@@ -305,7 +322,7 @@ class CheckoutService:
                                       "so I can prepare your order.", code="address_required")
             quote = DeliveryService(self.db, self.business_id).quote(address)
             if not quote.available:
-                raise ValidationError(quote.message)
+                raise ValidationError(quote.message, code=quote.code, params=quote.params)
             cart.delivery_zone_id = uuid.UUID(quote.zone_id)
             cart.delivery_address = address[:300]
         else:
@@ -313,12 +330,14 @@ class CheckoutService:
         self.db.flush()
         totals = self.carts.totals(cart)
         if totals.issues:
-            raise ValidationError("; ".join(totals.issues))
+            raise ValidationError("; ".join(totals.issues), code="stock_issues",
+                                  params={"issues": totals.issue_details})
         now = datetime.now(timezone.utc)
         cart.checkout = {"fingerprint": _fingerprint(totals, cart), "prepared_at": now.isoformat(),
                          "expires_at": (now + CHECKOUT_TTL).isoformat(), "notes": notes, "summary_message_id": None}
         self.db.flush()
-        return CheckoutSummary(cart.id, render_summary(totals, cart.delivery_address), totals, cart.delivery_address)
+        return CheckoutSummary(cart.id, render_summary(totals, cart.delivery_address, language), totals,
+                               cart.delivery_address)
 
     def attach_summary_message(self, cart_id: uuid.UUID, message_id: uuid.UUID) -> None:
         cart = self.carts.carts.get(cart_id)
@@ -343,7 +362,7 @@ class CheckoutService:
         checkout = cart.checkout
         if datetime.fromisoformat(checkout["expires_at"]) < datetime.now(timezone.utc):
             cart.checkout = None
-            raise CheckoutChanged("That order summary has expired.")
+            raise CheckoutChanged("That order summary has expired.", code="checkout_expired")
         summary = MessageRepo(self.db, self.business_id).get(checkout["summary_message_id"]) \
             if checkout.get("summary_message_id") else None
         if summary is None or summary.delivery_status not in DELIVERED_STATUSES \
@@ -409,7 +428,8 @@ class OrderService:
             if p is None or not p.active:
                 raise ValidationError("A product in the cart is no longer available")
             if p.stock_quantity < item.quantity:
-                raise ConflictError(f"Only {p.stock_quantity} unit(s) of {p.name} left in stock")
+                raise ConflictError(f"Only {p.stock_quantity} unit(s) of {p.name} left in stock", code="out_of_stock",
+                                    params={"qty": p.stock_quantity, "name": p.name})
             line = p.price * item.quantity
             self.db.add(OrderItem(business_id=self.business_id, order_id=order.id, product_id=p.id,
                                   product_name=p.name, sku=p.sku, unit_price=p.price, quantity=item.quantity,
@@ -435,7 +455,7 @@ class OrderService:
             where.append(Order.customer_id == customer.id)
         order = self.orders.first(*where)
         if not order:
-            raise NotFoundError(f"Order {number} not found")
+            raise NotFoundError(f"Order {number} not found", code="order_not_found", params={"number": number})
         return order
 
     def for_customer(self, customer: Customer, limit: int = 10) -> list[Order]:

@@ -6,11 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import NotFoundError
 from app.core.logging import bind_context, get_logger, log_operation
+from app.i18n import t
 from app.models import Business, Payment
 from app.services.commerce_service import OrderService, money
 from app.services.conversation_service import ConversationService
 from app.services.messaging_service import send_to_customer
 from app.services.payment_service import PaymentService
+from app.workflows.handoff import conversation_language
 
 logger = get_logger(__name__)
 
@@ -63,13 +65,12 @@ def notify_payment_result(db: Session, business_id: uuid.UUID, payment_id: uuid.
     conv = ConversationService(db, business_id).repo.get(order.conversation_id)
     if conv is None:
         return
+    lang = conversation_language(conv, business)
     if payment.status == "successful":
-        text = (f"✅ Payment received! Order {order.order_number} is now PAID.\n"
-                f"Amount: {order.currency} {money(payment.amount)}\n"
-                f"We'll let you know when it's on the way. Thank you for shopping with {business.name}!")
+        text = t("provider_paid", lang, number=order.order_number, amount=f"{order.currency} {money(payment.amount)}",
+                 shop=business.name)
     else:
-        text = (f"❌ Payment for order {order.order_number} was not completed"
-                f"{f' ({payment.failure_reason})' if payment.failure_reason else ''}. "
-                "Reply 'pay' to try again.")
+        text = t("provider_failed", lang, number=order.order_number,
+                 reason=f" ({payment.failure_reason})" if payment.failure_reason else "")
     send_to_customer(db, business_id, conv, text, role="assistant", metadata={"event": "payment_" + payment.status})
 

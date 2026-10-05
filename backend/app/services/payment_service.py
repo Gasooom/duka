@@ -42,9 +42,11 @@ class PaymentService:
 
     def _payable(self, order: Order) -> None:
         if order.status == "cancelled":
-            raise ValidationError(f"Order {order.order_number} is cancelled")
+            raise ValidationError(f"Order {order.order_number} is cancelled", code="order_cancelled",
+                                  params={"number": order.order_number})
         if order.payment_status == "paid":
-            raise ValidationError(f"Order {order.order_number} is already paid")
+            raise ValidationError(f"Order {order.order_number} is already paid", code="order_paid",
+                                  params={"number": order.order_number})
 
     def _sync_order_status(self, order: Order) -> None:
         """Derive order.payment_status from its payments."""
@@ -60,7 +62,7 @@ class PaymentService:
     def initiate(self, order: Order, payer_phone: str) -> Payment:
         business = self.db.get(Business, self.business_id)
         if not business.payment_enabled:
-            raise ValidationError("Online payment is not enabled for this business")
+            raise ValidationError("Online payment is not enabled for this business", code="payment_disabled")
         self._payable(order)
         name = self.provider_name()
         if name == "manual":
@@ -137,7 +139,7 @@ class PaymentService:
         verify; this can never mark the order paid."""
         reference = (reference or "").strip()
         if not 4 <= len(reference) <= 128:
-            raise ValidationError("Please send the full transaction reference")
+            raise ValidationError("Please send the full transaction reference", code="reference_too_short")
         self._payable(order)
         existing = self.payments.first(Payment.order_id == order.id, Payment.provider == "manual",
                                        Payment.external_reference == reference)

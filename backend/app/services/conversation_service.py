@@ -126,6 +126,21 @@ class ConversationService:
         return self.runs.list(where=[AgentRun.conversation_id == conv.id], order_by=[AgentRun.created_at.desc()],
                               limit=limit)
 
+    def update_language(self, conv: Conversation, message: Message, text: str, ignore_terms: set[str]) -> str | None:
+        """Detect the language of an inbound text and update the conversation's language state (only on a
+        confident detection; see app/agents/language.py). The detection is kept on the message for debugging."""
+        from app.agents.language import detect, next_language
+        det = detect(text, ignore_terms)
+        message.attributes = {**(message.attributes or {}), "language": {
+            "detected": det.code, "confidence": det.confidence, "dialect_confidence": det.dialect_confidence,
+            "evidence": det.evidence}}
+        new, confirmed = next_language(conv.language_code, det)
+        if new != conv.language_code or confirmed:
+            conv.language_code = new
+            conv.language_confidence = det.confidence
+            conv.language_updated_at = datetime.now(timezone.utc)
+        return conv.language_code
+
     def set_state(self, conv: Conversation, **updates: Any) -> None:
         conv.state = {**(conv.state or {}), **updates}  # reassign so JSONB change is detected
 

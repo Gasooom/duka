@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
@@ -50,6 +51,11 @@ class Conversation(IdMixin, TimestampMixin, TenantMixin, Base):
     # Small deterministic working memory, e.g. the last product list shown to the customer.
     state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Conversation language (en | rw | fr | sw | ar | ar-SD), set from confident detections only; see
+    # app/agents/language.py. Drives the model's reply language and every server-written message.
+    language_code: Mapped[str | None] = mapped_column(String(8))
+    language_confidence: Mapped[float | None] = mapped_column(Float)
+    language_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     customer: Mapped["Customer"] = relationship(lazy="joined")
 

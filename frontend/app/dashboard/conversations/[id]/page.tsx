@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { use, useState } from "react";
 import { api, when } from "@/lib/api";
-import { Badge, ErrorNote, useApi } from "@/components/ui";
+import { Badge, ErrorNote, LanguageTag, useApi } from "@/components/ui";
 
 function Json({ value }: { value: any }) {
   return <pre className="max-h-64 overflow-auto rounded bg-canvas p-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(value, null, 2)}</pre>;
@@ -85,7 +85,7 @@ export default function ConversationDebugger({ params }: { params: Promise<{ id:
       <Link href="/dashboard/conversations" className="text-xs text-brand">← Conversations</Link>
       <div className="mb-4 mt-2 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold">{c.customer.name || "Customer"} <Badge value={c.status} /></h1>
+          <h1 className="flex items-center gap-2 text-xl font-semibold">{c.customer.name || "Customer"} <Badge value={c.status} /> <LanguageTag code={c.language} /></h1>
           <div className="font-mono text-xs text-ink-mute">+{c.customer.whatsapp_number} · conversation {c.id.slice(0, 8)}</div>
           {c.handoff_reason && <div className="mt-1 text-xs text-amber-800">Handoff: {c.handoff_reason}</div>}
         </div>

@@ -87,6 +87,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_dashboard_ops.py` | Setup checklist, password change signs out other devices, operator password reset, dev tools hidden in production |
 | `test_reliability.py` | `/healthz`, `/readyz` ok/degraded/down, `/metrics`, ops token, log scrubbing (secrets, SQL parameters, phone numbers, query strings), retention, dead-letter requeue |
 | `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, 40 conversations) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
+| `test_language.py` | Language detection (incl. Sudanese vs standard Arabic), persistence, confident switches only, code-switching, every server message in the conversation language, facts identical across languages, Arabic digits in the grounding check |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
 
 ---
@@ -152,6 +153,10 @@ Everything below works in dev mode without credentials. The real integrations ar
   recorded by the owner with evidence and audited; a customer's "I paid, ref X" is stored as pending for the owner
   to check. The mock provider never auto-confirms and is refused in production. MoMo callbacks are re-verified
   against the MoMo API.
+- **Speaks the customer's language.** Each conversation keeps a detected language (English, Kinyarwanda, French,
+  Swahili, Arabic, Sudanese Arabic); it changes only on a confident switch, the assistant is told to answer in it
+  (Sudanese stays Sudanese), and every automatic message — summaries, confirmations, status and payment messages,
+  handoff — uses it, with prices and names unchanged.
 - **The owner stays in control.** New orders wait for the owner's review; the owner is alerted on WhatsApp; a
   customer can ask for a person in English, Kinyarwanda, French or Swahili; voice notes go to a person; a takeover
   pauses the AI until the owner explicitly returns the conversation to it.

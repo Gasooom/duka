@@ -49,7 +49,8 @@ def resolve_product(ctx: ToolContext, ref: str) -> Product:
         svc.products.first(func.lower(Product.name) == ref.lower())
     if p:
         return p
-    raise NotFoundError(f"Product '{ref}' not found. Search the catalog first.")
+    raise NotFoundError(f"Product '{ref}' not found. Search the catalog first.", code="product_not_found",
+                        params={"ref": ref})
 
 
 def _cart_payload(ctx: ToolContext, location: str | None = None) -> dict[str, Any]:
@@ -76,8 +77,8 @@ class Args(BaseModel):
 
 class SearchArgs(Args):
     query: str = Field(..., description="Search terms in the catalog's language: translate the customer's words "
-                                        "(e.g. Kinyarwanda 'inkweto z'umukara' or French 'baskets noires' -> "
-                                        "'black sneakers')")
+                                        "(e.g. Kinyarwanda 'inkweto z'umukara', French 'baskets noires' or Arabic "
+                                        "'جزمة سودا' -> 'black sneakers')")
     max_price: float | None = Field(None, ge=0, description="Maximum unit price in the business currency")
     min_price: float | None = Field(None, ge=0)
     category: str | None = None
@@ -217,7 +218,7 @@ def calculate_cart_total(ctx: ToolContext, a: TotalArgs) -> dict[str, Any]:
 def calculate_delivery(ctx: ToolContext, a: DeliveryArgs) -> dict[str, Any]:
     q = DeliveryService(ctx.db, ctx.business_id).quote(a.location)
     return {"available": q.available, "zone": q.zone_name, "fee": float(q.fee), "currency": ctx.business.currency,
-            "estimated_time": q.estimated_time, "message": q.message}
+            "estimated_time": q.estimated_time, "message": q.message, "code": q.code, "params": q.params}
 
 
 # ---------------------------------------------------------------- order tools
@@ -225,7 +226,8 @@ def prepare_checkout(ctx: ToolContext, a: CheckoutArgs) -> dict[str, Any]:
     """Prepares the summary the customer must confirm. It does NOT place the order: the system sends the
     summary itself and places the order only when the customer replies YES in their next message."""
     summary = CheckoutService(ctx.db, ctx.business_id).prepare(ctx.customer, ctx.conversation,
-                                                                delivery_address=a.delivery_address, notes=a.notes)
+                                                                delivery_address=a.delivery_address, notes=a.notes,
+                                                                language=ctx.language)
     return {"summary_text": summary.text, "cart": summary.totals.as_dict(), "delivery_address": summary.delivery_address,
             "awaiting_customer_confirmation": True,
             "note": "The order is NOT placed. The system sends this summary to the customer, who must reply YES."}
@@ -237,7 +239,7 @@ def _find_order(ctx: ToolContext, number: str | None):
         return svc.get_by_number(number, customer=ctx.customer)  # customers only see their own orders
     orders = svc.for_customer(ctx.customer, limit=1)
     if not orders:
-        raise NotFoundError("You have no orders yet")
+        raise NotFoundError("You have no orders yet", code="no_orders")
     return orders[0]
 
 
@@ -271,7 +273,7 @@ def initiate_payment(ctx: ToolContext, a: PaymentArgs) -> dict[str, Any]:
     order = svc.get_by_number(a.order_number, customer=ctx.customer) if a.order_number \
         else svc.latest_unpaid(ctx.customer)
     if order is None:
-        raise ValidationError("There is no unpaid order. Place an order first.")
+        raise ValidationError("There is no unpaid order. Place an order first.", code="no_unpaid_order")
     payments = PaymentService(ctx.db, ctx.business_id)
     if payments.provider_name() == "manual":
         from app.workflows.orders import payment_instructions
@@ -295,7 +297,7 @@ def submit_payment_reference(ctx: ToolContext, a: PaymentReferenceArgs) -> dict[
     order = svc.get_by_number(a.order_number, customer=ctx.customer) if a.order_number \
         else svc.latest_unpaid(ctx.customer)
     if order is None:
-        raise ValidationError("There is no unpaid order.")
+        raise ValidationError("There is no unpaid order.", code="no_unpaid_order")
     customer_reported_payment(ctx.db, ctx.business_id, ctx.customer, order, a.reference)
     return {"order_number": order.order_number, "payment_status": "pending",
             "note": "Recorded for the shop to verify. The order is NOT paid until the shop confirms."}

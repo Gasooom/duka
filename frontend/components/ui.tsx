@@ -44,6 +44,16 @@ const STATUS_STYLES: Record<string, string> = {
   inactive: "bg-gray-100 text-gray-500",
 };
 
+const LANGUAGES: Record<string, string> = {
+  en: "English", rw: "Kinyarwanda", fr: "Français", sw: "Kiswahili", ar: "Arabic", "ar-SD": "Sudanese Arabic",
+};
+
+/** The language the customer is writing in (detected; drives the assistant and every automatic message). */
+export function LanguageTag({ code }: { code: string | null | undefined }) {
+  if (!code) return null;
+  return <span className="inline-block whitespace-nowrap rounded border border-line px-1.5 py-0.5 text-xs text-ink-soft" title="Conversation language">{LANGUAGES[code] || code}</span>;
+}
+
 export function Badge({ value }: { value: string | null | undefined }) {
   if (!value) return null;
   return (

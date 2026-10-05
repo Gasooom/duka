@@ -19,9 +19,14 @@ _AFFIRMATIVE = {
     # Swahili
     "ndiyo", "ndio", "sawa", "naam",
 }
+_AFFIRMATIVE |= {"نعم", "ايوه", "ايوا", "ايوو", "اي", "ايوه اكد", "تمام", "موافق", "اكيد", "ماشي", "كويس",
+                 "اكد", "اكد الطلب", "اكدو", "نعم اكد", "ايوه تمام", "تمام كده", "خلاص اكد"}
 _FILLERS = {"please", "pls", "plz", "thanks", "thank", "you", "murakoze", "merci", "asante", "sir", "madam",
-            "now", "it", "s", "il", "vous", "plait", "te", "rwose", "cyane"}
-_NEGATIVE = {
+            "now", "it", "s", "il", "vous", "plait", "te", "rwose", "cyane", "شكرا", "لو", "سمحت", "يا", "زول",
+            "اخوي", "اخي", "الله", "يخليك"}
+_NEGATIVE_AR = {"لا", "ما", "مش", "الغي", "الغاء", "استني", "انتظر", "غير", "غيرو", "اقيف"}
+_MIXED_ONLY = {"بس", "لكن"}  # "but": blocks a confirmation, but is not a "no" on its own
+_NEGATIVE = _NEGATIVE_AR | {
     "no", "n", "nope", "nah", "cancel", "stop", "dont", "don", "not", "wait", "change", "but",
     "oya", "hoya", "reka", "non", "annuler", "attends", "mais", "hapana", "subiri",
 }
@@ -31,8 +36,9 @@ _EMOJI_NO = {"👎", "❌", "🙅"}
 
 def _normalize(text: str) -> str:
     t = unicodedata.normalize("NFKD", text.lower())
-    t = "".join(c for c in t if not unicodedata.combining(c))
-    t = re.sub(r"[^a-z0-9 ]+", " ", t)
+    t = "".join(c for c in t if not unicodedata.combining(c))  # also removes harakat and hamza on أ/إ/آ
+    t = t.replace("ة", "ه").replace("ى", "ي").replace("ـ", "")
+    t = re.sub(r"[^a-z0-9\u0621-\u064a ]+", " ", t)  # keep Latin and Arabic letters
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -51,7 +57,7 @@ def classify_confirmation(text: str | None) -> str | None:
     words = t.split()
     if t in _NEGATIVE or words[0] in _NEGATIVE:
         return "no"
-    if any(w in _NEGATIVE for w in words):
+    if any(w in _NEGATIVE or w in _MIXED_ONLY for w in words):
         return None  # mixed ("yes but ..."): not an explicit confirmation
     core = " ".join(w for w in words if w not in _FILLERS)
     return "yes" if core in _AFFIRMATIVE else None
@@ -60,6 +66,11 @@ def classify_confirmation(text: str | None) -> str | None:
 # Request phrasing, not bare nouns: "human hair wigs" or "a person-sized bag" must stay product searches.
 _WHO = r"(a |an |the |some |your |a real )?(person|someone|somebody|human|agent|staff|manager|owner|people|representative)"
 _HUMAN_PATTERNS = [
+    # Arabic (general and Sudanese): "I want to talk to someone", "a real person", "customer service"
+    r"(داير|دايره|عايز|عاوز|اريد|ابغي|ابغا|بدي|ممكن)\s+(اتكلم|اكلم|اتحدث|اتواصل|التحدث|التواصل|اكلمكم)",
+    r"(اتكلم|اكلم|اتحدث|التحدث|اتواصل|التواصل)\s+(مع|ل)\s*(زول|شخص|موظف|انسان|حد|المدير|صاحب|الادار|خدمه)",
+    r"(داير|عايز|عاوز|اريد|ابغي)\s+(زول|شخص|موظف|انسان)",
+    r"(خدمه العملاء|شخص حقيقي|زول حقيقي|موظف حقيقي|انسان حقيقي)",
     # English
     rf"\b(talk|speak|chat)\s+(to|with)\s+{_WHO}\b",
     rf"\b(i want|i need|i d like|get me|connect me( to| with)?|let me talk to|put me through to)\s+{_WHO}\b",

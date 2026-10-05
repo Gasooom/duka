@@ -28,29 +28,45 @@ from typing import Any
 MONEY_KEYS = {"price", "unit_price", "line_total", "subtotal", "delivery_fee", "fee", "discount", "total", "amount"}
 STOCK_KEYS = {"stock_quantity", "available_stock"}
 ORDER_NO_RE = re.compile(r"\b[A-Z]{1,6}-\d{3,}\b")
-CURRENCY = r"(?:rwf|frw|rwfs|francs?|kes|ksh|ugx|tzs|usd|eur|\$|€)"
+CURRENCY = r"(?:rwf|frw|rwfs|francs?|kes|ksh|ugx|tzs|usd|eur|\$|€|فرنك|جنيه|ريال|دولار)"
+# Arabic-Indic (٠-٩) and Persian (۰-۹) digits and Arabic separators: a price written as ٩٥٬٠٠٠ must be checked
+# exactly like 95,000, otherwise an Arabic reply could carry an unverified number.
+_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٬٫", "0123456789" "0123456789" ",.")
+
+
+def western_digits(text: str) -> str:
+    return (text or "").translate(_DIGITS)
 NUMBER_RE = re.compile(r"(?<![\w.,])(\d{1,3}(?:[,   ]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(k\b)?", re.I)
 LIST_MARKER_RE = re.compile(r"^\s*(\d{1,2})[.)]\s")
 ORDINAL_RE = re.compile(r"\b(\d{1,2})(st|nd|rd|th)\b", re.I)
-TOTAL_WORDS = re.compile(r"\b(total|subtotal|delivery|fee|shipping|altogether|in all|overall|cart|igiteranyo|montant)\b", re.I)
+TOTAL_WORDS = re.compile(r"\b(total|subtotal|delivery|fee|shipping|altogether|in all|overall|cart|igiteranyo|montant|"
+                         r"jumla|livraison|الإجمالي|الاجمالي|المجموع|الجملة|التوصيل|السلة)\b", re.I)
 BUDGET_RE = re.compile(r"\b(under|below|less than|within|up to|budget|max(imum)?|cheaper than|munsi ya|moins de|chini ya)\b",
                        re.I)
-MONEY_WORDS = re.compile(r"\b(price|costs?|priced|total|subtotal|fee|pay|amount|igiciro|prix|bei)\b", re.I)
+MONEY_WORDS = re.compile(r"\b(price|costs?|priced|total|subtotal|fee|pay|amount|igiciro|prix|bei|سعر|السعر|سعره|"
+                         r"بكم|المبلغ|ثمن|رسوم|الإجمالي|الجملة)\b", re.I)
 
 PLACED_RE = re.compile(r"\border\b[^.\n]{0,40}\b(placed|confirmed|created|submitted|booked)\b|"
-                       r"\b(placed|confirmed|created|submitted)\s+(your|the|an)\s+order\b", re.I)
+                       r"\b(placed|confirmed|created|submitted)\s+(your|the|an)\s+order\b|"
+                       r"(تم|اتم)\s*(تأكيد|تاكيد|تسجيل)\s*(الطلب|طلبك)|الطلب\s*(اتأكد|اتاكد|اتسجل|تأكد|تم)|سجلنا\s*(الطلب|طلبك)",
+                       re.I)
 PAID_RE = re.compile(r"\b(is|are|was|been|now|fully|already)\s+(fully\s+)?paid\b|"
-                     r"\bpayment\s+(has been\s+|was\s+|is\s+)?(received|confirmed|successful|complete|completed)\b", re.I)
-NOT_PAID_RE = re.compile(r"\b(not|n't|unpaid|once|after|until|when|if)\b[^.\n]{0,25}\bpaid\b|\bnot yet paid\b", re.I)
+                     r"\bpayment\s+(has been\s+|was\s+|is\s+)?(received|confirmed|successful|complete|completed)\b|"
+                     r"(مدفوع|اتدفع|تم الدفع|استلمنا الدفع|الدفع وصل|وصلنا الدفع)", re.I)
+NOT_PAID_RE = re.compile(r"\b(not|n't|unpaid|once|after|until|when|if)\b[^.\n]{0,25}\bpaid\b|\bnot yet paid\b|"
+                         r"(غير|ما|مش|لم)\s*(مدفوع|يتم الدفع|اتدفع)|(بعد|لمن|عندما)\s*(ما\s*)?(تدفع|الدفع)", re.I)
 STATUS_CLAIMS = {
-    "delivered": re.compile(r"\b(is|has been|was|been)\s+delivered\b", re.I),
-    "out_for_delivery": re.compile(r"\b(out for delivery|on (its|the) way|shipped|dispatched)\b", re.I),
-    "accepted": re.compile(r"\b(is|has been|was)\s+accepted\b", re.I),
-    "cancelled": re.compile(r"\b(is|has been|was)\s+cancell?ed\b", re.I),
+    "delivered": re.compile(r"\b(is|has been|was|been)\s+delivered\b|اتسلم|تم التسليم|تم توصيل", re.I),
+    "out_for_delivery": re.compile(r"\b(out for delivery|on (its|the) way|shipped|dispatched)\b|في الطريق|في السكة",
+                                   re.I),
+    "accepted": re.compile(r"\b(is|has been|was)\s+accepted\b|اتقبل|تم قبول", re.I),
+    "cancelled": re.compile(r"\b(is|has been|was)\s+cancell?ed\b|اتلغى|تم إلغاء|تم الغاء", re.I),
     "ready": re.compile(r"\b(is|has been)\s+ready\b", re.I),
 }
-AVAILABLE_RE = re.compile(r"\b(in stock|available|we have|we've got|we carry|turabifite|disponible|tunayo)\b", re.I)
-NEGATED_AVAIL_RE = re.compile(r"\b(not|no longer|n't|out of stock|unavailable|sold out)\b", re.I)
+AVAILABLE_RE = re.compile(r"\b(in stock|available|we have|we've got|we carry|turabifite|disponible|tunayo)\b|"
+                          r"متوفر|متاح|موجود|عندنا", re.I)
+NEGATED_AVAIL_RE = re.compile(r"\b(not|no longer|n't|out of stock|unavailable|sold out)\b|"
+                              r"غير متوفر|غير متاح|ما موجود|ما متوفر|مافي|ما في|ما عندنا|خلص|نفد", re.I)
 PROMPT_LEAK_RE = re.compile(r"(RULES:|BUSINESS RULES:|CONTEXT:|STATE_JSON|system prompt)")
 CART_CLAIM_RE = re.compile(r"\b(added|i've added|i have added|is in your cart|are in your cart|removed from your cart)\b",
                            re.I)
@@ -119,7 +135,8 @@ def _parse_number(m: re.Match) -> Decimal | None:
 
 
 def build_ledger(tool_results: list[tuple[str, dict, dict]], state: dict | None, customer_text: str) -> Ledger:
-    led = Ledger(customer_text=customer_text or "", customer_numbers=_numbers_in(customer_text or ""))
+    customer_text = western_digits(customer_text or "")
+    led = Ledger(customer_text=customer_text, customer_numbers=_numbers_in(customer_text))
     for name, _args, result in tool_results:
         if not result.get("ok"):
             continue
@@ -206,6 +223,7 @@ def _is_money(sentence: str, start: int, end: int, value: Decimal) -> bool:
 
 def verify(reply: str, led: Ledger) -> list[Violation]:
     violations: list[Violation] = []
+    reply = western_digits(reply)
     if PROMPT_LEAK_RE.search(reply):
         violations.append(Violation("prompt_leak", "reply exposes internal instructions"))
     for order_no in ORDER_NO_RE.findall(reply):
