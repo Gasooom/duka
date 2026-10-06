@@ -368,6 +368,13 @@ class CheckoutService:
         if summary is None or summary.delivery_status not in DELIVERED_STATUSES \
                 or summary.created_at >= confirmation.created_at:
             raise ValidationError("The order summary was not delivered yet.", code="summary_not_delivered")
+        # The YES must answer the summary. Live: after the summary the assistant asked "add the t-shirt to your
+        # cart?", the customer said "yes" and the old summary (without the t-shirt) was ordered.
+        if MessageRepo(self.db, self.business_id).first(
+                Message.conversation_id == summary.conversation_id, Message.role.in_(("assistant", "human_agent")),
+                Message.created_at > summary.created_at, Message.created_at < confirmation.created_at):
+            cart.checkout = None
+            raise CheckoutChanged("The conversation moved on after the summary.", code="summary_superseded")
         totals = self.carts.totals(cart)
         if totals.issues or _fingerprint(totals, cart) != checkout["fingerprint"]:
             cart.checkout = None

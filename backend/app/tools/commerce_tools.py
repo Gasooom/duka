@@ -81,7 +81,9 @@ class SearchArgs(Args):
     query: str = Field(..., description="Search terms in the catalog's language: translate the customer's words "
                                         "(e.g. Kinyarwanda 'inkweto z'umukara', French 'baskets noires' or Arabic "
                                         "'جزمة سودا' -> 'black sneakers')")
-    max_price: float | None = Field(None, ge=0, description="Maximum unit price in the business currency")
+    max_price: float | None = Field(None, ge=0, description="Maximum unit price in the business currency. Only when "
+                                                            "the customer states a budget: never guess one (for "
+                                                            "'cheap' search without it and compare the prices)")
     min_price: float | None = Field(None, ge=0)
     category: str | None = None
     limit: int = Field(5, ge=1, le=10)
@@ -158,7 +160,18 @@ def search_products(ctx: ToolContext, a: SearchArgs) -> dict[str, Any]:
                      "again with them translated (e.g. 'phone', 'black sneakers') before saying the shop does not "
                      "sell it.")
         note += " 'categories' are the shop's real categories: if one fits what the customer wants, search it."
-        return {"count": 0, "products": [], "note": note, "categories": active_categories(ctx)}
+        out: dict[str, Any] = {"count": 0, "products": [], "note": note, "categories": active_categories(ctx)}
+        if a.max_price is not None or a.min_price is not None:
+            # Live: models turned "cheap" into an invented max_price and told the customer the shop had no cheap
+            # Samsung phone. Show what matches at other prices, clearly outside the limit.
+            other = ProductService(ctx.db, ctx.business_id).search(a.query, category=a.category, limit=10)
+            nearest = sorted(other, key=lambda h: float(h.product.price), reverse=a.max_price is None)[:3]
+            if nearest:
+                out["outside_price_range"] = [product_dict(h.product) for h in nearest]
+                out["note"] += (" Nothing is within the price limit; 'outside_price_range' lists matching products "
+                                "at other prices. Say so plainly (e.g. the cheapest is ...); never present them as "
+                                "within the limit.")
+        return out
     if any(h.missing for h in hits):
         note = ("No product matches every word of the search; 'missing' lists the words a product does NOT match. "
                 "Say so, and never describe a product with a word it is missing.")
@@ -242,11 +255,15 @@ def clear_cart(ctx: ToolContext, a: NoArgs) -> dict[str, Any]:
 
 
 def calculate_cart_total(ctx: ToolContext, a: TotalArgs) -> dict[str, Any]:
-    return _cart_payload(ctx, a.delivery_location)
+    # Live: models passed the customer's location to calculate_delivery but not here, then added the two numbers
+    # themselves. The location the customer already gave in this conversation applies (its zone is shown).
+    return _cart_payload(ctx, a.delivery_location or (ctx.conversation.state or {}).get("delivery_location"))
 
 
 def calculate_delivery(ctx: ToolContext, a: DeliveryArgs) -> dict[str, Any]:
     q = DeliveryService(ctx.db, ctx.business_id).quote(a.location)
+    if q.available:
+        ConversationService(ctx.db, ctx.business_id).set_state(ctx.conversation, delivery_location=a.location)
     return {"available": q.available, "zone": q.zone_name, "fee": float(q.fee), "currency": ctx.business.currency,
             "estimated_time": q.estimated_time, "message": q.message, "code": q.code, "params": q.params}
 
@@ -255,9 +272,14 @@ def calculate_delivery(ctx: ToolContext, a: DeliveryArgs) -> dict[str, Any]:
 def prepare_checkout(ctx: ToolContext, a: CheckoutArgs) -> dict[str, Any]:
     """Prepares the summary the customer must confirm. It does NOT place the order: the system sends the
     summary itself and places the order only when the customer replies YES in their next message."""
+    # The address the customer already gave in this conversation applies; the summary shows it and still needs YES.
+    address = a.delivery_address or (ctx.conversation.state or {}).get("delivery_location")
     summary = CheckoutService(ctx.db, ctx.business_id).prepare(ctx.customer, ctx.conversation,
-                                                                delivery_address=a.delivery_address, notes=a.notes,
+                                                                delivery_address=address, notes=a.notes,
                                                                 language=ctx.language)
+    if summary.delivery_address:
+        ConversationService(ctx.db, ctx.business_id).set_state(ctx.conversation,
+                                                               delivery_location=summary.delivery_address)
     return {"summary_text": summary.text, "cart": summary.totals.as_dict(), "delivery_address": summary.delivery_address,
             "awaiting_customer_confirmation": True,
             "note": "The order is NOT placed. The system sends this summary to the customer, who must reply YES."}

@@ -16,6 +16,7 @@ Commerce facts must come from structured tool results or server state, never fro
          Kitenge dress for "red dress" with missing=["red"]: "the Kitenge dress is red" is rejected);
        - any other number (including specs written with a unit: 128GB, 250g) must appear in tool data, server
          context or the customer's own message.
+     The model may also never imitate the server's order summary or ask for the YES that places an order.
   3. On any violation the engine sends the deterministic render of the same tool results instead of the
      model's text (agents/render.py), or a safe clarifying message if there are none.
 Known limit: a product name the model invents *alongside* real products is not detected by name; its price,
@@ -79,6 +80,11 @@ AVAILABLE_RE = re.compile(r"\b(in stock|available|we have|we've got|we carry|tur
 NEGATED_AVAIL_RE = re.compile(r"\b(not|no longer|out of stock|unavailable|sold out)\b|n't\b|"
                               r"غير متوفر|غير متاح|ما موجود|ما متوفر|مافي|ما في|ما عندنا|خلص|نفد", re.I)
 PROMPT_LEAK_RE = re.compile(r"(RULES:|BUSINESS RULES:|CONTEXT:|STATE_JSON|system prompt)")
+# Only the server writes the order summary and asks for the YES that places an order. Live, the model wrote its own
+# "🧾 Order summary — please check: ... Reply YES to confirm this order" after prepare_checkout had FAILED.
+SUMMARY_IMITATION_RE = re.compile(r"🧾|\b(reply|answer|send|type|respond)\s+(with\s+)?[\"'«]?(yes|yego|oui|ndiyo)\b|"
+                                  r"\bsubiza\s+yego\b|\br[ée]pondez\s+oui\b|\bjibu\s+ndiyo\b|(أرسل|رد|ردي)\s*(بـ)?\s*«?\s*(نعم|أيوه|ايوه)",
+                                  re.I)
 CART_CLAIM_RE = re.compile(r"\b(added|i've added|i have added|is in your cart|are in your cart|removed from your cart)\b",
                            re.I)
 # A number written with a unit is a specification (128GB, 250g, 5000mAh, 750ml), never a price: it must come from
@@ -287,6 +293,8 @@ def verify(reply: str, led: Ledger) -> list[Violation]:
     reply = western_digits(reply)
     if PROMPT_LEAK_RE.search(reply):
         violations.append(Violation("prompt_leak", "reply exposes internal instructions"))
+    if SUMMARY_IMITATION_RE.search(reply):
+        violations.append(Violation("summary_imitation", "only the server writes the order summary and asks for YES"))
     for order_no in ORDER_NO_RE.findall(reply):
         if order_no.upper() not in led.order_numbers and order_no.upper() not in led.customer_text.upper():
             violations.append(Violation("order_number", order_no))

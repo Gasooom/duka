@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -80,7 +81,11 @@ def build_system_prompt(business: Business, cfg: AgentConfig, language: str = "e
         "pending). Ask for the delivery address only at checkout or when the customer asks about delivery.",
         "You cannot place orders. When the customer wants to order, call prepare_checkout (first ask for their "
         "delivery address if delivery applies). The system then sends the exact summary itself and places the "
-        "order only if the customer replies YES.",
+        "order only if the customer replies YES. When the customer gives a delivery address while the cart has "
+        "items, call prepare_checkout with it right away (do not first ask whether to proceed): its summary is "
+        "the exact total including delivery and asks the customer to confirm.",
+        "Use max_price/min_price only when the customer gives an amount. 'Cheap' is not an amount: search "
+        "without a limit and point out the cheapest results.",
         "Only say an order is paid when a tool returns payment_status 'paid'. For payment, share only what "
         "initiate_payment returns. If the customer sends a transaction ID, call submit_payment_reference.",
         "Quote prices, totals, fees and stock exactly as the tools return them. Never estimate or compute.",
@@ -292,6 +297,9 @@ class AgentEngine:
                 run.status = "success" if text else "error"
                 if not text:
                     run.error = "No final response within the tool-iteration limit"
+                    # The tools did answer: send their facts instead of an apology (live: five check_inventory
+                    # calls for "size 42" ended in "sorry, I'm having trouble").
+                    text = self._render_facts(turn_results, self.language)
             except Exception as exc:  # LLM outage, bad response... never crash the webhook
                 run.status = "error"
                 run.error = safe_error(exc)
@@ -314,7 +322,7 @@ class AgentEngine:
                               kinds=sorted({v.kind for v in violations}))
                     run.status = "ungrounded"
                     text = self._render_facts(turn_results, self.language) or \
-                        self._render_context(text, ledger, context, self.language)
+                        self._render_context(text, ledger, context, self.language, trigger.content)
                     unsure = text is None
                     text = text or t("unsure", self.language)
             unsure = unsure or run.status == "error"
@@ -350,20 +358,27 @@ class AgentEngine:
         return "\n".join(x for x in (self.business.description, self.cfg.business_rules, self.cfg.system_prompt) if x)
 
     @staticmethod
-    def _render_context(rejected: str, ledger: Any, context: list[dict[str, Any]], lang: str) -> str | None:
-        """No tool ran this turn: answer with the current facts of the products the rejected reply talked about."""
+    def _render_context(rejected: str, ledger: Any, context: list[dict[str, Any]], lang: str,
+                        asked: str | None) -> str | None:
+        """No tool ran this turn and the customer asked about a product shown earlier ("how much is the Lenovo?"):
+        answer with its current facts. Anything else ("oui") gets the clarifying question instead."""
+        asked_words = set(re.findall(r"\w{4,}", (asked or "").lower()))
         by_name = {d["name"].lower(): d for d in context}
-        named = [by_name[p.name.lower()] for p in mentioned_products(rejected, ledger) if p.name.lower() in by_name]
+        named = [by_name[p.name.lower()] for p in mentioned_products(rejected, ledger)
+                 if p.name.lower() in by_name and asked_words & set(re.findall(r"\w{4,}", p.name.lower()))]
         return "\n".join(render_tool_result("get_product", {}, {"ok": True, "product": d}, lang) for d in named) or None
 
     @staticmethod
     def _render_facts(turn_results: list[tuple[str, dict, dict]], lang: str = "en") -> str | None:
-        """Deterministic reply from this turn's tool results (the same renderer the offline engine uses)."""
+        """Deterministic reply from this turn's tool results (the same renderer the offline engine uses). A repeated
+        tool keeps its last (refined) result, except per-product lookups: five check_inventory calls are five
+        answers, not one."""
         parts: dict[str, str] = {}
         for name, args, result in turn_results:
             if name != "handoff_to_human" and (result.get("ok") or result.get("user_facing")):
-                parts[name] = render_tool_result(name, args, result, lang)
-        return "\n\n".join(parts.values()) or None
+                key = f"{name}:{json.dumps(args, sort_keys=True)}" if name in ("get_product", "check_inventory") else name
+                parts[key] = render_tool_result(name, args, result, lang)
+        return "\n\n".join(dict.fromkeys(parts.values())) or None
 
     def _track_uncertainty(self, conv: Conversation, unsure: bool, steps: list[dict[str, Any]]) -> bool:
         """Two unanswerable turns in a row (LLM failure or nothing verifiable to say) -> hand over to a person."""
@@ -375,6 +390,23 @@ class AgentEngine:
             steps.append({"type": "handoff", "reason": "repeated uncertainty"})
             return True
         return False
+
+    def _just_ordered(self, customer: Customer, conv: Conversation, current_run: uuid.UUID, minutes: int = 15):
+        """The order this conversation confirmed in its previous turn (within a few minutes), if the cart is empty:
+        the customer's "yes" can only repeat that confirmation. If the assistant asked anything since ("shall I
+        send the payment request?"), the "yes" answers that question instead and is left to the model."""
+        cart = CartService(self.db, self.business.id).get_active(customer, conv, create=False)
+        if cart and cart.items:
+            return None
+        previous = next(iter(AgentRunRepo(self.db, self.business.id).list(
+            where=[AgentRun.conversation_id == conv.id, AgentRun.id != current_run],
+            order_by=[AgentRun.created_at.desc()], limit=1)), None)
+        if previous is None or previous.status not in ("order_confirmed", "already_confirmed"):
+            return None
+        latest = next(iter(OrderService(self.db, self.business.id).for_customer(customer, limit=1)), None)
+        if latest and latest.created_at and latest.created_at >= datetime.now(timezone.utc) - timedelta(minutes=minutes):
+            return latest
+        return None
 
     def _error(self, exc: DomainError) -> str:
         return error_text(exc.code, exc.params, exc.message, self.language)
@@ -410,6 +442,13 @@ class AgentEngine:
             if answer == "no":
                 checkout.cancel(customer)
                 return t("declined", self.language), "checkout_declined", {}
+        elif classify_confirmation(trigger.content) == "yes":
+            # Live: a second "yes" after the order was placed made the model re-add the item, prepare a new
+            # checkout and imitate the summary. A bare confirmation right after an order is answered here.
+            last = self._just_ordered(customer, conv, outcome.run.id)
+            if last is not None:
+                return (t("already_confirmed", self.language, number=last.order_number), "already_confirmed",
+                        {"order_number": last.order_number})
         if wants_human(trigger.content):
             if self.business.human_handoff_enabled:
                 request_human(self.db, self.business, conv, "Customer asked for a person")

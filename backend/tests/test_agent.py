@@ -8,6 +8,7 @@ import httpx
 from app.agents.engine import build_system_prompt
 from app.agents.providers import LLMError, LLMProvider, LLMResponse, ToolCall, set_provider_override
 from app.agents.providers.openai_compat import OpenAICompatProvider
+from app.i18n import t
 from app.models import AgentRun, Business, Message
 from app.tools.registry import TOOLS, tools_for
 
@@ -22,9 +23,9 @@ def test_all_required_tools_registered_with_schemas():
     assert REQUIRED_TOOLS <= set(TOOLS)
     # The model cannot place orders or confirm payments: no such tool exists.
     assert not {"create_order", "confirm_order", "place_order", "mark_paid", "record_payment"} & set(TOOLS)
-    for t in TOOLS.values():
-        s = t.schema()
-        assert s["function"]["name"] == t.name and s["function"]["parameters"]["type"] == "object"
+    for tool in TOOLS.values():
+        s = tool.schema()
+        assert s["function"]["name"] == tool.name and s["function"]["parameters"]["type"] == "object"
 
 
 def test_tools_follow_business_config(fashion, db):
@@ -119,7 +120,16 @@ def test_tool_iteration_limit(fashion, outbox, db):
     set_provider_override(Scripted([loop] * 10))
     fashion.send("cart?")
     run = db.query(AgentRun).one()
-    assert run.llm_calls == 5 and run.status == "error"
+    assert run.llm_calls == 5 and run.status == "error" and "iteration limit" in run.error
+    # The tools did answer, so the customer gets their facts (server-rendered) rather than an apology.
+    assert outbox.sent[-1][1] == t("cart_empty", "en")
+
+
+def test_tool_iteration_limit_without_any_fact_still_apologises(fashion, outbox, db):
+    loop = LLMResponse(content=None, tool_calls=[ToolCall("1", "no_such_tool", {})])
+    set_provider_override(Scripted([loop] * 10))
+    fashion.send("cart?")
+    assert db.query(AgentRun).one().status == "error"
     assert outbox.sent[-1][1].startswith("Sorry")
 
 

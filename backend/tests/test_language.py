@@ -223,7 +223,9 @@ def test_arabic_yes_and_no_work_on_a_summary(fashion, outbox):
         fashion.send(text)
     fashion.send("ايوه بس غير المقاس")  # "yes but change the size": not a confirmation
     assert fashion.get("/api/orders").json() == []
-    fashion.send("نعم")
+    fashion.send("نعم")  # the assistant replied in between: the summary is shown again instead of being ordered
+    assert fashion.get("/api/orders").json() == [] and "🧾" in last_reply(outbox)
+    fashion.send("نعم")  # YES right after the summary
     assert len(fashion.get("/api/orders").json()) == 1
 
 
