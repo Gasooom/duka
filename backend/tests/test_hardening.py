@@ -125,3 +125,11 @@ def test_expired_and_unsigned_tokens_are_refused(fashion, monkeypatch):
     part = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")  # noqa: E731
     unsigned = f"{part({'alg': 'none', 'typ': 'JWT'})}.{part(claims)}."
     assert fashion.client.get("/api/orders", headers={"Authorization": f"Bearer {unsigned}"}).status_code == 401
+
+
+def test_hosted_postgres_urls_use_the_installed_driver():
+    """Render (and most hosts) give postgresql:// or postgres:// URLs; the app ships psycopg 3, not psycopg2."""
+    from app.core.config import Settings
+    for url in ("postgresql://u:p@dpg-x-a/duka", "postgres://u:p@dpg-x-a/duka"):
+        assert Settings(database_url=url).database_url == "postgresql+psycopg://u:p@dpg-x-a/duka"
+    assert Settings(database_url="postgresql+psycopg://u:p@h/d").database_url == "postgresql+psycopg://u:p@h/d"

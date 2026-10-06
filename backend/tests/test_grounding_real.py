@@ -225,8 +225,8 @@ def test_tool_loop_fallback_answers_every_product_it_looked_up(fashion, outbox, 
 def test_repeated_yes_after_an_order_is_answered_by_the_server(fashion, outbox):
     """Live: a second "yes" after the order was placed made the model re-add the item, try a new checkout and write
     its own "🧾 Order summary ... Reply YES to confirm". The server now answers a bare repeat confirmation."""
-    from tests.conftest import place_order
     from app.i18n import t
+    from tests.conftest import place_order
     order = place_order(fashion)
     scripted = model()  # the model must not be consulted
     fashion.send("yes")

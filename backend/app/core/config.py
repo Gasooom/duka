@@ -1,7 +1,7 @@
 """Application configuration. All secrets come from environment variables."""
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     database_url: str = "postgresql+psycopg://commerce:commerce@localhost:5432/commerce"
+
+    @field_validator("database_url")
+    @classmethod
+    def _psycopg_driver(cls, v: str) -> str:
+        # Hosted Postgres (e.g. Render) hands out postgresql:// or postgres:// URLs; SQLAlchemy would then look for
+        # psycopg2, which is not installed. The app uses psycopg 3.
+        for prefix in ("postgresql://", "postgres://"):
+            if v.startswith(prefix):
+                return "postgresql+psycopg://" + v[len(prefix):]
+        return v
 
     # Auth / crypto
     jwt_secret: str = "change-me-in-env"
