@@ -25,8 +25,11 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
    current transaction) and are sent after commit (`commit_and_deliver` or the worker). Never call an adapter
    directly, and never send before the state the message describes is committed.
 7. **Orders need an explicit confirmation.** The LLM can only `prepare_checkout`; an order is created only by
-   `CheckoutService.confirm` when a later customer message is an explicit YES to the delivered, unchanged summary.
-   Never assume a delivery zone or address. Never add a tool that creates orders or confirms payments.
+   `CheckoutService.confirm` when a later customer message is an explicit YES to the delivered, unchanged summary
+   and nothing else was sent after it (a YES after the conversation moved on re-sends the summary instead). Only the
+   server writes the summary and asks for that YES. Never assume a delivery zone or address (the customer's own
+   address from earlier in the conversation may be reused; the summary shows it). Never add a tool that creates
+   orders or confirms payments.
 8. **Sensitive actions are audited** (`audit_service.record`): manual payments, voids, order status changes,
    takeovers. `audit_events` is append-only.
 9. **Model text is checked before it is sent.** `agents/grounding.py` verifies every LLM reply against this turn's
@@ -35,6 +38,10 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
 10. **Customer-facing text is localised, facts are not.** Every server-written customer message goes through
    `app/i18n.py` in the conversation language (`conversation_language(conv, business)`); add new texts there in
    all six languages (a test enforces it) and never translate names, prices, SKUs, order numbers or owner text.
+11. **Search returns real matches or nothing.** `ProductService.search` returns a product only when a query word
+   matches what it IS (name, category, SKU, attributes) — not a colour alone, not a description mention. Vector
+   similarity ranks but never admits (the default hash embedding collides: "phone" scored 0.46 against a tea).
+   Never add a fallback that fills an empty result. `tests/test_search.py` holds the regressions.
 
 ## Layout
 ```

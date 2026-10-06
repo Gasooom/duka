@@ -76,6 +76,9 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_tenant_isolation.py` (**mandatory**) | Business A can't read, modify or infer B's data through any id-bearing API route (the matrix fails if a new route isn't covered), lists/search/stats/usage, the agent tools, customer chat, webhooks, the repositories or forged/stale JWTs. The database itself rejects cross-tenant references and `business_id` changes (the test fails if a new tenant FK isn't guarded). Concurrent checkouts in two stores stay isolated. |
 | `test_e2e.py` | The section-37 demo, automated: signed webhook → search → "add the second one" → exact total incl. delivery → order → pay → signed provider callback → paid → WhatsApp confirmation. Store 2 then runs on the same engine with a completely different catalog. |
 | `test_products.py` | CRUD, CSV validation (row/column errors, all-or-nothing by default, SKU upsert), search precision + price filter, inventory ledger |
+| `test_search.py` | Catalog retrieval returns real matches or nothing: "phone" in a grocery is empty (the tea regression), colour-only and description-only matches rejected, strict price/category filters, exact/partial/plural/compound words, partial matches marked, positions survive an empty search, knowledge search needs a shared word, the phone question end to end |
+| `test_grounding_real.py` | Grounding precision on replies the real model wrote (list markers, numbers in names, shop rules, listing headers, conditional wording, follow-ups checked against current facts), the address/checkout flow, priced misses, repeated YES, summary imitation, a YES after the conversation moved on |
+| `test_simulator.py` | The dev simulator returns the reply even when a background worker claimed the message first |
 | `test_commerce.py` | Cart math, no assumed zone, checkout needs a real address, confirmation needs a delivered + unchanged + fresh summary, snapshots, stock races, state machine |
 | `test_orders_handoff.py` | Strict multilingual YES/NO, one order per confirmation, misbehaving LLM can't place orders or alter the summary, owner alerts (+ template), review/reject, handoff in EN/RW/FR/SW without false positives, takeover pauses the AI, explicit return |
 | `test_payments.py` | Manual payments (evidence, owner-only, reference reuse blocked, void, audit append-only), customer-reported refs stay pending, the agent can never mark paid, mock refused in production, provider callbacks, MoMo re-verification |
@@ -86,9 +89,9 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_human_control.py` | Business hours parsing in the shop's timezone, after-hours expectations for handoffs/voice notes/orders, `open_now` as a tool fact, business-wide AI pause |
 | `test_dashboard_ops.py` | Setup checklist, password change signs out other devices, operator password reset, dev tools hidden in production |
 | `test_reliability.py` | `/healthz`, `/readyz` ok/degraded/down, `/metrics`, ops token, log scrubbing (secrets, SQL parameters, phone numbers, query strings), retention, dead-letter requeue |
-| `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, 40 conversations) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
+| `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, v1.2.0: 71 conversations, three stores) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
 | `test_language.py` | Language detection (incl. Sudanese vs standard Arabic), persistence, confident switches only, code-switching, every server message in the conversation language, facts identical across languages, Arabic digits in the grounding check |
-| `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets |
+| `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets, expired and unsigned (`alg: none`) tokens refused |
 
 ---
 

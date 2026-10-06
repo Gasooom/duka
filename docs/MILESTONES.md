@@ -465,6 +465,22 @@ measures real model quality and the grounding false-positive rate; keep its repo
   exists) and translation quality — rw, sw and ar-SD wording must be reviewed by native speakers before the pilot.
   The offline rules engine cannot search with Arabic/Kinyarwanda queries (it browses); a real model translates them.
 
+### Validation program — real-model, end to end · COMPLETE · see `docs/VALIDATION_REPORT.md`
+
+- Trigger: with the real model (gpt-4o-mini), "phone under 300,000 RWF" in the grocery demo store returned "Rwandan
+  Tea 250g" — hash-embedding collisions (0.46 > 0.30) admitted vector-only hits. Search now needs word evidence on
+  what a product IS; vector similarity only ranks (`tests/test_search.py`, CLAUDE.md rule 11).
+- 21 defects found and fixed by running the real model through the real pipeline, a real browser and a production
+  rehearsal — among them: 12/42 real-model turns wrongly rejected by grounding (now 0–2 of ~46, all correct
+  catches), rw/fr/sw shoppers told "no black shoes" (untranslated searches), a YES that answered another question
+  ordering an old summary, the model imitating the server's summary, dashboard double-taps sending a staff WhatsApp
+  message twice, and `verify_restore.sh` checking a stale dump.
+- Evidence: backend tests 289 -> 348 passed; eval suite v1.2.0 (71 cases): offline 56/56 with the rules engine
+  and with the lying model, real model 67/71; live real-model scenarios 82–83/83; 36/36 cross-tenant attacks
+  blocked; production rehearsal 24/24; crash recovery, duplicate webhooks and outages verified live.
+- Verdict: READY WITH EXTERNAL DEPENDENCIES (WhatsApp number, server/domain, merchant, native-speaker review,
+  privacy/legal review).
+
 ### M11 — Real pilot (one Rwandan merchant) · NOT STARTED · BLOCKED on M2–M10 and a merchant
 
 ### M12 — Multi-store validation (2–5 stores) · NOT STARTED · BLOCKED on M11
