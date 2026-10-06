@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useState } from "react";
 import { api, money, when } from "@/lib/api";
-import { Badge, Empty, ErrorNote, PageHeader, useApi } from "@/components/ui";
+import { Badge, Empty, ErrorNote, NotLoaded, PageHeader, useApi } from "@/components/ui";
 
 const STATUSES = ["pending", "accepted", "ready", "out_for_delivery", "delivered", "cancelled"];
 const STATUS_LABEL: Record<string, string> = { pending: "needs review" };
@@ -158,7 +158,7 @@ function OrdersInner() {
   const router = useRouter();
   const status = params.get("status") || "";
   const selected = params.get("id");
-  const { data, error, reload } = useApi<any[]>(`/orders${status ? `?status=${status}` : ""}`, 15000);
+  const { data, error, reload, loading } = useApi<any[]>(`/orders${status ? `?status=${status}` : ""}`, 15000);
   const go = (q: Record<string, string>) => {
     const sp = new URLSearchParams({ ...(status ? { status } : {}), ...(selected ? { id: selected } : {}), ...q });
     for (const [k, v] of Array.from(sp.entries())) if (!v) sp.delete(k);
@@ -178,7 +178,7 @@ function OrdersInner() {
       </div>
       <div className="grid gap-5 lg:grid-cols-5">
         <div className="card overflow-x-auto lg:col-span-3">
-          {data && data.length === 0 ? <Empty>No orders.</Empty> : (
+          {!data ? <NotLoaded loading={loading} /> : data.length === 0 ? <Empty>No orders.</Empty> : (
             <table className="w-full">
               <thead><tr><th className="th">Order</th><th className="th">Status</th><th className="th">Payment</th><th className="th text-right">Total</th><th className="th text-right">Created</th></tr></thead>
               <tbody>

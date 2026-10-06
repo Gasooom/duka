@@ -2,11 +2,11 @@
 
 import { FormEvent, useState } from "react";
 import { api, money } from "@/lib/api";
-import { Empty, ErrorNote, Field, OkNote, PageHeader, useApi } from "@/components/ui";
+import { Empty, ErrorNote, Field, NotLoaded, OkNote, PageHeader, useApi } from "@/components/ui";
 
 export default function SettingsPage() {
   const { data: s, reload } = useApi<any>("/business/settings");
-  const { data: zones, reload: reloadZones } = useApi<any[]>("/delivery-zones");
+  const { data: zones, reload: reloadZones, loading: zonesLoading } = useApi<any[]>("/delivery-zones");
   const { data: biz } = useApi<any>("/business");
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -91,7 +91,7 @@ export default function SettingsPage() {
             <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={() => setEditing(null)}>Cancel</button><button className="btn-primary">Save zone</button></div>
           </form>
         )}
-        {zones && zones.length === 0 ? <Empty>No delivery zones. Orders need one when delivery is enabled.</Empty> : (
+        {!zones ? <NotLoaded loading={zonesLoading} /> : zones.length === 0 ? <Empty>No delivery zones. Orders need one when delivery is enabled.</Empty> : (
           <table className="w-full">
             <tbody>
               {zones?.map((z) => (

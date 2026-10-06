@@ -77,6 +77,12 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="px-4 py-10 text-center text-sm text-ink-mute">{children}</div>;
 }
 
+/** A list that has no data yet: "Loading…", or a plain failure note (the error itself is shown above). Never an
+ * empty table, which reads as "you have no orders" while the request is still running or has failed. */
+export function NotLoaded({ loading }: { loading: boolean }) {
+  return <Empty>{loading ? "Loading…" : "Could not load this list."}</Empty>;
+}
+
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
     <label className="block">

@@ -20,7 +20,8 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
     if (ct) out.set("content-type", ct);
     return new Response(res.status === 204 ? null : await res.arrayBuffer(), { status: res.status, headers: out });
   } catch {
-    return Response.json({ detail: "Backend unavailable" }, { status: 502 });
+    return Response.json({ detail: "Duka's server is not responding right now. Please try again in a minute." },
+      { status: 502 });
   }
 }
 

@@ -27,7 +27,24 @@ export function setToken(token: string | null) {
   } catch {}
 }
 
-export async function api<T = any>(path: string, opts: { method?: string; body?: any; form?: FormData } = {}): Promise<T> {
+type ApiOptions = { method?: string; body?: any; form?: FormData };
+const inFlight = new Map<string, Promise<any>>();
+
+/** API call. A double click / double tap must never create two products, payments or WhatsApp messages: while
+ * an identical write is still in flight, a repeat of it gets the first request's result instead of a second
+ * request (React re-renders a disabled button too late to stop a fast second click). */
+export function api<T = any>(path: string, opts: ApiOptions = {}): Promise<T> {
+  const method = opts.method || (opts.form || opts.body !== undefined ? "POST" : "GET");
+  if (method === "GET") return request<T>(path, opts);
+  const key = `${method} ${path} ${opts.form ? "form" : JSON.stringify(opts.body ?? null)}`;
+  const running = inFlight.get(key);
+  if (running) return running as Promise<T>;
+  const p = request<T>(path, opts).finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
+
+async function request<T>(path: string, opts: ApiOptions): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;

@@ -4,13 +4,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { when } from "@/lib/api";
-import { Badge, Empty, ErrorNote, LanguageTag, PageHeader, useApi } from "@/components/ui";
+import { Badge, Empty, ErrorNote, LanguageTag, NotLoaded, PageHeader, useApi } from "@/components/ui";
 
 function Inner() {
   const params = useSearchParams();
   const router = useRouter();
   const attention = params.get("attention") === "1";
-  const { data, error } = useApi<any[]>(`/conversations${attention ? "?needs_attention=true" : ""}`, 10000);
+  const { data, error, loading } = useApi<any[]>(`/conversations${attention ? "?needs_attention=true" : ""}`, 10000);
   return (
     <div>
       <PageHeader title="Conversations" subtitle="Open one to see the full AI trace: decisions, tool calls, inputs, outputs, latency, tokens." />
@@ -24,7 +24,7 @@ function Inner() {
         ))}
       </div>
       <div className="card">
-        {data && data.length === 0 ? <Empty>No conversations{attention ? " need attention" : " yet"}.</Empty> : (
+        {!data ? <NotLoaded loading={loading} /> : data.length === 0 ? <Empty>No conversations{attention ? " need attention" : " yet"}.</Empty> : (
           <ul>
             {data?.map((c) => (
               <li key={c.id} className="border-b border-line last:border-0">

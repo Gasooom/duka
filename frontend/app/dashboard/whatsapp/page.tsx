@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { Badge, Empty, ErrorNote, Field, OkNote, PageHeader, useApi } from "@/components/ui";
+import { Badge, Empty, ErrorNote, Field, NotLoaded, OkNote, PageHeader, useApi } from "@/components/ui";
 
 type Bubble = { role: string; content: string; run?: string | null; status?: string };
 
@@ -66,7 +66,7 @@ function Simulator() {
 }
 
 export default function WhatsAppPage() {
-  const { data: accounts, error, reload } = useApi<any[]>("/whatsapp/accounts");
+  const { data: accounts, error, reload, loading } = useApi<any[]>("/whatsapp/accounts");
   const { data: me } = useApi<any>("/auth/me");
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -92,7 +92,7 @@ export default function WhatsAppPage() {
         <div className="space-y-5">
           <section className="card">
             <div className="border-b border-line px-4 py-3"><h2 className="text-sm font-semibold">Connected numbers</h2></div>
-            {accounts && accounts.length === 0 ? <Empty>No number connected. The simulator will create a dev number automatically.</Empty> : (
+            {!accounts ? <NotLoaded loading={loading} /> : accounts.length === 0 ? <Empty>No number connected. The simulator will create a dev number automatically.</Empty> : (
               <table className="w-full"><tbody>
                 {accounts?.map((a) => (
                   <tr key={a.id}>

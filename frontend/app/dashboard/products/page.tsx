@@ -2,7 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { api, money } from "@/lib/api";
-import { Badge, Empty, ErrorNote, Field, OkNote, PageHeader, useApi } from "@/components/ui";
+import { Badge, Empty, ErrorNote, Field, NotLoaded, OkNote, PageHeader, useApi } from "@/components/ui";
 
 type Product = {
   id: string; name: string; description: string | null; price: number; currency: string; sku: string;
@@ -98,7 +98,7 @@ function CsvImport({ onDone }: { onDone: () => void }) {
 
 export default function Products() {
   const [q, setQ] = useState("");
-  const { data, error, reload } = useApi<Product[]>(`/products${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  const { data, error, reload, loading } = useApi<Product[]>(`/products${q ? `?q=${encodeURIComponent(q)}` : ""}`);
   const [editing, setEditing] = useState<Product | "new" | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -121,7 +121,7 @@ export default function Products() {
       <ErrorNote error={error || actionError} />
       <input placeholder="Filter by name or SKU…" value={q} onChange={(e) => setQ(e.target.value)} className="input mb-3 max-w-xs" />
       <div className="card overflow-x-auto">
-        {data && data.length === 0 ? <Empty>No products yet. Add one or import a CSV.</Empty> : (
+        {!data ? <NotLoaded loading={loading} /> : data.length === 0 ? <Empty>No products yet. Add one or import a CSV.</Empty> : (
           <table className="w-full min-w-[720px]">
             <thead><tr>
               <th className="th">Product</th><th className="th">SKU</th><th className="th">Category</th>

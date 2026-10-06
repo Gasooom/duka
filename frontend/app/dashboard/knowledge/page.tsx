@@ -2,10 +2,10 @@
 
 import { FormEvent, useState } from "react";
 import { api, when } from "@/lib/api";
-import { Empty, ErrorNote, Field, OkNote, PageHeader, useApi } from "@/components/ui";
+import { Empty, ErrorNote, Field, NotLoaded, OkNote, PageHeader, useApi } from "@/components/ui";
 
 export default function Knowledge() {
-  const { data, error, reload } = useApi<any[]>("/knowledge");
+  const { data, error, reload, loading } = useApi<any[]>("/knowledge");
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [q, setQ] = useState("");
@@ -55,7 +55,7 @@ export default function Knowledge() {
         </div>
       </div>
       <div className="card mt-5">
-        {data && data.length === 0 ? <Empty>No documents yet.</Empty> : (
+        {!data ? <NotLoaded loading={loading} /> : data.length === 0 ? <Empty>No documents yet.</Empty> : (
           <table className="w-full">
             <thead><tr><th className="th">Title</th><th className="th">Source</th><th className="th text-right">Chunks</th><th className="th text-right">Added</th><th className="th"></th></tr></thead>
             <tbody>
