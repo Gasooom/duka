@@ -57,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     t = report["totals"]
     print(f"{report['suite']} v{report['version']} · provider={report['provider']} model={report['model']} "
           f"· prompt={report['prompt_fingerprint']} · {report['duration_s']}s")
-    print(f"passed {t['passed']} · failed {t['failed']} · skipped {t['skipped']} · pass rate {t['pass_rate']}")
+    print(f"PASS {t['passed']} · FAIL {t['failed']} · SKIPPED_EXTERNAL_DEPENDENCY {t['skipped']} (need a real LLM) "
+          f"· pass rate {t['pass_rate']}")
     for cat, c in sorted(report["by_category"].items()):
         print(f"  {cat:<18} pass {c['pass']:>2}  fail {c['fail']:>2}  skip {c['skip']:>2}")
     m = report["metrics"]

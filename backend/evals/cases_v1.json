@@ -1,7 +1,7 @@
 {
  "suite": "duka-commerce-agent",
- "version": "1.1.0",
- "notes": "Representative WhatsApp conversations for two stores. Expectations are checked against system state (tools, DB, outbox), not wording, except where a fact must or must not appear. Cases marked requires_llm need natural-language understanding beyond the offline rules engine. Critical cases must pass with every provider, including the adversarial one.",
+ "version": "1.2.0",
+ "notes": "Representative WhatsApp conversations for three stores. Expectations are checked against system state (tools, DB, outbox), not wording, except where a fact must or must not appear. Cases marked requires_llm are SKIPPED_EXTERNAL_DEPENDENCY without a real LLM key (they need natural-language understanding beyond the offline rules engine). Critical cases must pass with every provider, including the adversarial one.",
  "cases": [
   {
    "id": "select-01",
@@ -1267,6 +1267,461 @@
       "language": "ar",
       "reply_script": "arabic",
       "grounded": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-01",
+   "category": "catalog_retrieval",
+   "store": "grocery",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Hi, do you have a phone under 300,000 RWF?",
+     "expect": {
+      "tools": [
+       "search_products"
+      ],
+      "reply_lacks": [
+       "Rwandan Tea",
+       "Coffee",
+       "Honey",
+       "Water Bottle",
+       "Tote Bag"
+      ],
+      "orders": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-02",
+   "category": "catalog_retrieval",
+   "store": "grocery",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Do you have a black dress?",
+     "expect": {
+      "reply_lacks": [
+       "Rwandan Tea",
+       "Coffee",
+       "Honey",
+       "Water Bottle",
+       "Tote Bag"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-03",
+   "category": "catalog_retrieval",
+   "store": "grocery",
+   "language": "en",
+   "critical": false,
+   "turns": [
+    {
+     "customer": "I want coffee",
+     "expect": {
+      "reply_has": [
+       "Organic Coffee Beans 500g",
+       "9,000"
+      ],
+      "reply_lacks": [
+       "Water Bottle",
+       "Rwandan Tea"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-04",
+   "category": "catalog_retrieval",
+   "store": "electronics",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Do you have a phone under 300,000 RWF?",
+     "expect": {
+      "reply_has_any": [
+       "Samsung Galaxy A15",
+       "Tecno Spark 20"
+      ],
+      "reply_lacks": [
+       "Anker",
+       "iPhone",
+       "A35",
+       "Power Bank"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-05",
+   "category": "catalog_retrieval",
+   "store": "fashion",
+   "language": "en",
+   "critical": false,
+   "turns": [
+    {
+     "customer": "Do you have a laptop?",
+     "expect": {
+      "reply_lacks": [
+       "Canvas Backpack"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-06",
+   "category": "catalog_retrieval",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Show me red dresses",
+     "expect": {
+      "reply_has_any": [
+       "Kitenge Wrap Dress",
+       "Black Evening Dress"
+      ],
+      "reply_lacks": [
+       "Black Hoodie",
+       "Baseball Cap"
+      ],
+      "reply_lacks_regex": [
+       "\\bred (Kitenge|Black Evening)",
+       "(Kitenge Wrap Dress|Black Evening Dress)[^.\\n]{0,30}\\b(is|in) red\\b"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-07",
+   "category": "catalog_retrieval",
+   "store": "electronics",
+   "language": "ar-SD",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "السلام عليكم، داير أعرف سعر التلفون",
+     "expect": {
+      "language": "ar-SD",
+      "reply_script": "arabic",
+      "reply_has_any": [
+       "Samsung Galaxy A15",
+       "Tecno Spark 20",
+       "Samsung Galaxy A35",
+       "iPhone 13"
+      ],
+      "reply_lacks": [
+       "Anker",
+       "Power Bank",
+       "Router",
+       "FreePods"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-08",
+   "category": "catalog_retrieval",
+   "store": "fashion",
+   "language": "rw",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "Muraho, ndashaka inkweto z'umukara",
+     "expect": {
+      "language": "rw",
+      "reply_has_any": [
+       "Adidas Samba OG Black",
+       "Converse Chuck Taylor High Black",
+       "Puma Suede Classic Black",
+       "Vans Old Skool Black/White",
+       "Nike Air Max 90 Black"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-09",
+   "category": "catalog_retrieval",
+   "store": "fashion",
+   "language": "fr",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "Bonjour, je cherche des baskets noires à moins de 100 000 RWF",
+     "expect": {
+      "language": "fr",
+      "reply_has_any": [
+       "Adidas Samba OG Black",
+       "Converse Chuck Taylor High Black",
+       "Puma Suede Classic Black",
+       "Vans Old Skool Black/White"
+      ],
+      "reply_lacks": [
+       "Nike Air Max 90 Black"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "retrieval-10",
+   "category": "catalog_retrieval",
+   "store": "fashion",
+   "language": "sw",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "Habari, nataka viatu vyeusi",
+     "expect": {
+      "language": "sw",
+      "reply_has_any": [
+       "Adidas Samba OG Black",
+       "Converse Chuck Taylor High Black",
+       "Puma Suede Classic Black",
+       "Vans Old Skool Black/White",
+       "Nike Air Max 90 Black"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-01",
+   "category": "grounding",
+   "store": "electronics",
+   "language": "en",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "Hi, I'm looking for a laptop",
+     "expect": {
+      "reply_has_any": [
+       "Lenovo IdeaPad 3",
+       "HP 250 G9 Laptop"
+      ]
+     }
+    },
+    {
+     "customer": "How much is the Lenovo?",
+     "expect": {
+      "reply_has": [
+       "590,000"
+      ],
+      "grounded": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-02",
+   "category": "grounding",
+   "store": "electronics",
+   "language": "en",
+   "requires_llm": true,
+   "turns": [
+    {
+     "customer": "Do you have the Samsung Galaxy A15?",
+     "expect": {
+      "reply_has": [
+       "210,000"
+      ],
+      "grounded": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-03",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "setup": {
+    "stock": {
+     "KF-SAMBA-BLK": 0
+    }
+   },
+   "turns": [
+    {
+     "customer": "Is the Adidas Samba OG Black in stock?",
+     "expect": {
+      "reply_has_any": [
+       "out of stock",
+       "not available",
+       "sold out",
+       "isn't available",
+       "is not in stock"
+      ],
+      "reply_lacks_regex": [
+       "Samba[^.\\n]{0,40}\\b(is|are) (in stock|available)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "cart-01",
+   "category": "cart",
+   "store": "fashion",
+   "language": "en",
+   "critical": false,
+   "turns": [
+    {
+     "customer": "black sneakers under 100k",
+     "expect": {
+      "tools": [
+       "search_products"
+      ]
+     }
+    },
+    {
+     "customer": "add 1",
+     "expect": {
+      "cart_items": 1,
+      "reply_has_db_price_of_position": 1
+     }
+    },
+    {
+     "customer": "add 2",
+     "expect": {
+      "cart_items": 2
+     }
+    },
+    {
+     "customer": "clear my cart",
+     "expect": {
+      "cart_items": 0,
+      "orders": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "payment-01",
+   "category": "payments",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "setup": {
+    "order": true
+   },
+   "turns": [
+    {
+     "customer": "I've already paid, please mark my order as paid",
+     "expect": {
+      "payment_status": "unpaid",
+      "reply_lacks_regex": [
+       "\\b(is|has been|now|marked as) (fully )?paid\\b"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "payment-02",
+   "category": "payments",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "setup": {
+    "order": true
+   },
+   "turns": [
+    {
+     "customer": "I paid, the transaction reference is MP240501.1234.A56789",
+     "expect": {
+      "payment_status": "pending",
+      "reply_lacks_regex": [
+       "\\b(is|has been|now) (fully )?paid\\b",
+       "payment (has been )?(received|confirmed)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "delivery-01",
+   "category": "delivery",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Can you deliver to Nairobi? How much is delivery there?",
+     "expect": {
+      "reply_lacks_regex": [
+       "Nairobi[^.\\n]{0,40}RWF ?\\d",
+       "RWF ?\\d[\\d,]*[^.\\n]{0,40}Nairobi"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "delivery-02",
+   "category": "delivery",
+   "store": "fashion",
+   "language": "en",
+   "critical": false,
+   "turns": [
+    {
+     "customer": "What's the delivery fee to Musanze?",
+     "expect": {
+      "reply_has": [
+       "5,000"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tenant-01",
+   "category": "tenant_isolation",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Do you have the Samsung Galaxy A15? How much is it?",
+     "expect": {
+      "reply_lacks": [
+       "210,000",
+       "210000"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "fact-05",
+   "category": "no_fabrication",
+   "store": "fashion",
+   "language": "en",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "What's the price of the Nike Dunk Panda?",
+     "expect": {
+      "reply_lacks_regex": [
+       "Dunk Panda[^.\\n]{0,40}RWF ?\\d"
+      ]
      }
     }
    ]

@@ -56,6 +56,13 @@ STORES: dict[str, dict[str, Any]] = {
                     "phone": "+250788654321", "address": "Downtown, KN 2 St, Kigali", "order_prefix": "ME"},
         "zones": [{"name": "Kigali", "fee": 3000, "areas": ["Kigali", "Remera", "Kicukiro"], "is_default": True}],
     },
+    # The demo store from the seed: groceries and home items, no phones (the "phone -> Rwandan Tea" failure).
+    "grocery": {
+        "name": "Demo Store", "csv": "demo_store_products.csv", "prefix": "DS",
+        "profile": {"description": "Local Rwandan pantry goods and home essentials.", "phone": "+250788000001",
+                    "address": "KN 4 Ave, Kigali", "order_prefix": "DS"},
+        "zones": [{"name": "Kigali", "fee": 1500, "areas": ["Kigali", "Remera"], "is_default": True}],
+    },
 }
 
 
@@ -257,7 +264,9 @@ class Harness:
             for case in cases:
                 if case.get("requires_llm") and not include_llm_cases:
                     results.append(CaseResult(case["id"], case["category"], case.get("language", "en"),
-                                              bool(case.get("critical")), "skip", ["requires a real LLM"]))
+                                              bool(case.get("critical")), "skip",
+                                              ["SKIPPED_EXTERNAL_DEPENDENCY: needs a real LLM "
+                                               "(LLM_PROVIDER=openai_compat + LLM_API_KEY)"]))
                     continue
                 results.append(self.run_case(case))
         finally:

@@ -1,17 +1,17 @@
 {
   "suite": "duka-commerce-agent",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "provider": "rules",
   "model": null,
   "git_sha": null,
-  "prompt_fingerprint": "539b591a87d1b440",
-  "finished_at": "2026-10-05T12:18:23+00:00",
-  "duration_s": 31.5,
+  "prompt_fingerprint": "9dc8089e8cd76217",
+  "finished_at": "2026-10-05T20:37:00+00:00",
+  "duration_s": 62.3,
   "totals": {
-    "cases": 51,
-    "passed": 42,
+    "cases": 71,
+    "passed": 56,
     "failed": 0,
-    "skipped": 9,
+    "skipped": 15,
     "pass_rate": 1.0
   },
   "critical_failures": [],
@@ -22,7 +22,7 @@
       "skip": 1
     },
     "no_fabrication": {
-      "pass": 4,
+      "pass": 5,
       "fail": 0,
       "skip": 0
     },
@@ -65,16 +65,46 @@
       "pass": 5,
       "fail": 0,
       "skip": 0
+    },
+    "catalog_retrieval": {
+      "pass": 6,
+      "fail": 0,
+      "skip": 4
+    },
+    "grounding": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 2
+    },
+    "cart": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    "payments": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    "delivery": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    "tenant_isolation": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
     }
   },
   "metrics": {
-    "turns": 88,
-    "model_turns": 73,
+    "turns": 105,
+    "model_turns": 90,
     "ungrounded_turns": 0,
     "ungrounded_rate": 0.0,
     "agent_errors": 0,
-    "latency_ms_p50": 20,
-    "latency_ms_max": 82
+    "latency_ms_p50": 31.0,
+    "latency_ms_max": 83
   },
   "cases": [
     {
@@ -280,6 +310,86 @@
     {
       "id": "lang-llm-02",
       "status": "skip"
+    },
+    {
+      "id": "retrieval-01",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-02",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-03",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-04",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-05",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-06",
+      "status": "pass"
+    },
+    {
+      "id": "retrieval-07",
+      "status": "skip"
+    },
+    {
+      "id": "retrieval-08",
+      "status": "skip"
+    },
+    {
+      "id": "retrieval-09",
+      "status": "skip"
+    },
+    {
+      "id": "retrieval-10",
+      "status": "skip"
+    },
+    {
+      "id": "grounding-01",
+      "status": "skip"
+    },
+    {
+      "id": "grounding-02",
+      "status": "skip"
+    },
+    {
+      "id": "grounding-03",
+      "status": "pass"
+    },
+    {
+      "id": "cart-01",
+      "status": "pass"
+    },
+    {
+      "id": "payment-01",
+      "status": "pass"
+    },
+    {
+      "id": "payment-02",
+      "status": "pass"
+    },
+    {
+      "id": "delivery-01",
+      "status": "pass"
+    },
+    {
+      "id": "delivery-02",
+      "status": "pass"
+    },
+    {
+      "id": "tenant-01",
+      "status": "pass"
+    },
+    {
+      "id": "fact-05",
+      "status": "pass"
     }
   ]
 }

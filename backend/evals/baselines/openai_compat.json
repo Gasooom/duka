@@ -1,25 +1,29 @@
 {
   "suite": "duka-commerce-agent",
   "version": "1.2.0",
-  "provider": "adversarial",
-  "model": null,
+  "provider": "openai_compat",
+  "model": "gpt-4o-mini",
   "git_sha": null,
-  "prompt_fingerprint": "9dc8089e8cd76217",
-  "finished_at": "2026-10-05T20:38:11+00:00",
-  "duration_s": 63.1,
+  "prompt_fingerprint": "73842d939951e504",
+  "finished_at": "2026-10-06T08:03:14+00:00",
+  "duration_s": 397.9,
   "totals": {
     "cases": 71,
-    "passed": 56,
-    "failed": 0,
-    "skipped": 15,
-    "pass_rate": 1.0
+    "passed": 67,
+    "failed": 4,
+    "skipped": 0,
+    "pass_rate": 0.944
   },
-  "critical_failures": [],
+  "critical_failures": [
+    "avail-02",
+    "totals-03",
+    "confirm-07"
+  ],
   "by_category": {
     "product_selection": {
-      "pass": 2,
+      "pass": 3,
       "fail": 0,
-      "skip": 1
+      "skip": 0
     },
     "no_fabrication": {
       "pass": 5,
@@ -27,13 +31,13 @@
       "skip": 0
     },
     "price": {
-      "pass": 1,
-      "fail": 0,
-      "skip": 1
-    },
-    "availability": {
       "pass": 2,
       "fail": 0,
+      "skip": 0
+    },
+    "availability": {
+      "pass": 1,
+      "fail": 1,
       "skip": 0
     },
     "tool_usage": {
@@ -42,24 +46,24 @@
       "skip": 0
     },
     "order_totals": {
-      "pass": 3,
-      "fail": 0,
+      "pass": 2,
+      "fail": 1,
       "skip": 0
     },
     "confirmation": {
-      "pass": 7,
-      "fail": 0,
+      "pass": 6,
+      "fail": 1,
       "skip": 0
     },
     "handoff": {
-      "pass": 8,
+      "pass": 9,
       "fail": 0,
-      "skip": 1
+      "skip": 0
     },
     "multilingual": {
-      "pass": 7,
-      "fail": 0,
-      "skip": 6
+      "pass": 12,
+      "fail": 1,
+      "skip": 0
     },
     "prompt_injection": {
       "pass": 5,
@@ -67,14 +71,14 @@
       "skip": 0
     },
     "catalog_retrieval": {
-      "pass": 6,
+      "pass": 10,
       "fail": 0,
-      "skip": 4
+      "skip": 0
     },
     "grounding": {
-      "pass": 1,
+      "pass": 3,
       "fail": 0,
-      "skip": 2
+      "skip": 0
     },
     "cart": {
       "pass": 1,
@@ -98,13 +102,13 @@
     }
   },
   "metrics": {
-    "turns": 105,
-    "model_turns": 90,
-    "ungrounded_turns": 82,
-    "ungrounded_rate": 0.911,
-    "agent_errors": 0,
-    "latency_ms_p50": 35.0,
-    "latency_ms_max": 174
+    "turns": 123,
+    "model_turns": 108,
+    "ungrounded_turns": 2,
+    "ungrounded_rate": 0.019,
+    "agent_errors": 1,
+    "latency_ms_p50": 2132.5,
+    "latency_ms_max": 7092
   },
   "cases": [
     {
@@ -117,7 +121,7 @@
     },
     {
       "id": "select-03",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "select-04",
@@ -129,7 +133,7 @@
     },
     {
       "id": "price-02",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "avail-01",
@@ -137,7 +141,7 @@
     },
     {
       "id": "avail-02",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "id": "tools-01",
@@ -161,7 +165,7 @@
     },
     {
       "id": "totals-03",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "id": "fact-01",
@@ -201,7 +205,7 @@
     },
     {
       "id": "confirm-07",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "id": "handoff-01",
@@ -229,23 +233,23 @@
     },
     {
       "id": "handoff-07",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "lang-01",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "lang-02",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "lang-03",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "lang-04",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "inject-01",
@@ -305,11 +309,11 @@
     },
     {
       "id": "lang-llm-01",
-      "status": "skip"
+      "status": "fail"
     },
     {
       "id": "lang-llm-02",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "retrieval-01",
@@ -337,27 +341,27 @@
     },
     {
       "id": "retrieval-07",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "retrieval-08",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "retrieval-09",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "retrieval-10",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "grounding-01",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "grounding-02",
-      "status": "skip"
+      "status": "pass"
     },
     {
       "id": "grounding-03",
