@@ -9,6 +9,7 @@
 # (see docs/OPERATIONS.md). Verify regularly with scripts/verify_restore.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+umask 077  # dumps hold customer phone numbers and conversations: readable by the backup owner only
 
 COMPOSE=${COMPOSE:-docker compose}
 BACKUP_DIR=${BACKUP_DIR:-backups}

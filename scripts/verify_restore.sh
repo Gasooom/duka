@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove a backup can be restored and used — not just that a file exists.
 #
-#   scripts/verify_restore.sh                         # newest backup in backups/
+#   scripts/verify_restore.sh                         # newest backup in $BACKUP_DIR (default backups/)
 #   scripts/verify_restore.sh backups/duka-....dump
 #
 # 1. restores into a scratch database (never touches the live one)
@@ -12,7 +12,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE=${COMPOSE:-docker compose}
-DUMP=${1:-$(ls -1t backups/duka-*.dump 2>/dev/null | head -1)}
+# The same folder backup.sh writes to (BACKUP_DIR), so a scheduled run verifies the newest REAL backup.
+DUMP=${1:-$(ls -1t "${BACKUP_DIR:-backups}"/duka-*.dump 2>/dev/null | head -1)}
 [ -n "$DUMP" ] && [ -f "$DUMP" ] || { echo "no backup found" >&2; exit 1; }
 DB_USER=${POSTGRES_USER:-$(grep -E '^POSTGRES_USER=' .env 2>/dev/null | cut -d= -f2 || true)}
 DB_PASSWORD=${POSTGRES_PASSWORD:-$(grep -E '^POSTGRES_PASSWORD=' .env 2>/dev/null | cut -d= -f2 || true)}
