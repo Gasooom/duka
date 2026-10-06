@@ -110,3 +110,18 @@ def test_simulated_whatsapp_is_refused_in_production(fashion, outbox, monkeypatc
     acct = db.query(WhatsAppAccount).filter_by(phone_number_id=fashion.phone_number_id).one()  # created in dev
     result = get_adapter(acct).send_text("250788111222", "hi")
     assert not result.ok and "disabled in production" in result.error
+
+
+def test_expired_and_unsigned_tokens_are_refused(fashion, monkeypatch):
+    import base64
+    import uuid
+
+    from app.core import security
+    me = fashion.get("/api/auth/me").json()["user"]
+    monkeypatch.setattr(settings, "jwt_expire_minutes", -1)
+    expired = security.create_access_token(uuid.UUID(me["id"]), uuid.UUID(fashion.business_id), me["role"])
+    assert fashion.client.get("/api/orders", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+    claims = {"sub": me["id"], "bid": fashion.business_id, "role": me["role"], "tv": 0, "exp": 4102444800}
+    part = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")  # noqa: E731
+    unsigned = f"{part({'alg': 'none', 'typ': 'JWT'})}.{part(claims)}."
+    assert fashion.client.get("/api/orders", headers={"Authorization": f"Bearer {unsigned}"}).status_code == 401
