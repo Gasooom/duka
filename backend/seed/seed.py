@@ -3,10 +3,12 @@
 Each tenant below is *pure configuration + data* — the same engine/tools serve all of them.
 Run:  python -m seed.seed      (from backend/)   or   make seed
 """
+import sys
 from pathlib import Path
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.session import session_scope
 from app.models import User
 from app.services.business_service import BusinessConfigService, register_business
@@ -121,6 +123,8 @@ def _sample_orders(db, business_id) -> None:
 
 
 def main() -> None:
+    if settings.is_production:  # before any database access: demo accounts use a published password
+        sys.exit("Refusing to seed demo data with APP_ENV=production.")
     for t in TENANTS:
         with session_scope() as db:
             print(seed_tenant(db, t))

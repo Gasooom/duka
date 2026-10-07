@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -111,6 +111,17 @@ class ConversationService:
                                 agent_run_id=agent_run_id)
         conv.last_message_at = datetime.now(timezone.utc)
         return msg
+
+    def last_inbound_at(self, customer_id: uuid.UUID) -> datetime | None:
+        """When the customer last wrote to the shop (any of their conversations): WhatsApp's 24-hour customer-service
+        window counts from this. Our own messages never extend it (conversation.last_message_at includes them), and
+        neither do WhatsApp system notices about the customer."""
+        return self.db.scalar(
+            select(func.max(Message.created_at))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(Message.business_id == self.business_id, Conversation.customer_id == customer_id,
+                   Message.role == "customer",
+                   func.coalesce(Message.attributes["type"].astext, "text") != "system"))
 
     def history(self, conv: Conversation, *, limit: int | None = None, roles: tuple[str, ...] | None = None) -> list[Message]:
         where = [Message.conversation_id == conv.id]

@@ -197,6 +197,20 @@ headers too):
 - Only the models in `LLM_MODEL` + `LLM_ALLOWED_MODELS` can be chosen per business.
 - Changes to payment instructions, prices, WhatsApp numbers, passwords and the AI settings are recorded in the
   append-only `audit_events` table (who, when, before/after; never a password or token).
+- WhatsApp's 24-hour window: normal messages are only delivered within 24 hours of the customer's last message
+  (after that only Meta-approved templates, which Duka does not send yet). A message to a customer silent for longer
+  than `WHATSAPP_WINDOW_HOURS` (23.5) — an order update, payment instructions, a staff reply — is not attempted: it
+  is marked failed (`outside_24h_window`), the conversation is flagged and the owner gets one alert per silence.
+  The same happens when Meta accepts a message and reports it failed later (error 131047 = window closed). Owner
+  alerts that fail later show as failed, with the reason, in the dashboard.
+- Orders keep their stock until the owner acts. The owner gets one reminder per order when it has waited
+  `ORDER_REVIEW_REMINDER_HOURS` (2) for review, or was accepted `ORDER_PAYMENT_REMINDER_HOURS` (24) ago and is
+  still unpaid. Nothing is cancelled or restocked automatically.
+- Catalog imports and knowledge uploads run in worker threads: a large one never delays webhooks or health checks.
+- The production image (`INSTALL_DEV=false`) holds only the app and its migrations: no tests, evals or demo seed
+  (they are deleted in the build; an earlier image layer still contains them, nothing in them is secret), and the
+  seed refuses `APP_ENV=production`. CI builds this image, checks its contents and scans it with Trivy: fixable
+  critical vulnerabilities fail the build, everything else is reported (`.trivyignore` documents any exception).
 
 **Verify after the first deploy** (`BASE=https://duka-api.onrender.com`):
 

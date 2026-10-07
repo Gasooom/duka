@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import bind_context, clear_context, get_logger, log_event, log_operation
 from app.db.session import SessionLocal
-from app.integrations.whatsapp.adapters import SendResult, get_adapter
+from app.integrations.whatsapp.adapters import META_WINDOW_ERROR, OUTSIDE_WINDOW, SendResult, get_adapter
 from app.models import Conversation, Message, Notification, WhatsAppAccount
 from app.repositories.repos import ConversationRepo, NotificationRepo, SettingsRepo, WhatsAppAccountRepo
 from app.services.conversation_service import ConversationService
@@ -28,6 +28,8 @@ logger = get_logger(__name__)
 OUTBOX_KEY = "duka_outbox"
 NOTIFY_KEY = "duka_notifications"
 RETRY_DELAYS_SECONDS = (10, 60, 300, 900)
+WINDOW_ALERT = "whatsapp_window_closed"      # owner alert kinds (notifications.kind)
+FAILED_ALERT = "whatsapp_delivery_failed"
 
 
 @dataclass
@@ -120,8 +122,51 @@ def _next_state(result: SendResult, attempts: int) -> tuple[str, datetime | None
 
 
 # ---------------------------------------------------------------- customer messages
+def _outside_window(last_inbound: datetime | None) -> bool:
+    """WhatsApp delivers normal messages only within 24 h of the customer's last message; after that only approved
+    templates. A customer who never wrote is outside it too."""
+    return last_inbound is None or \
+        datetime.now(timezone.utc) - last_inbound > timedelta(hours=settings.whatsapp_window_hours)
+
+
+def _seen(last_inbound: datetime | None) -> str:
+    if last_inbound is None:
+        return "has never written to your WhatsApp number"
+    hours = (datetime.now(timezone.utc) - last_inbound).total_seconds() / 3600
+    return f"last wrote {hours:.0f} hours ago"
+
+
+def _who(conv: Conversation) -> str:
+    return f"{conv.customer.name or 'Customer'} (+{conv.customer.whatsapp_number})"
+
+
+def _quote(msg: Message) -> str:
+    text = " ".join((msg.content or "").split())
+    return text[:280] + ("…" if len(text) > 280 else "")
+
+
+def _alert_owner_once(db: Session, business_id: uuid.UUID, conv: Conversation, kind: str, body: str) -> None:
+    """One owner alert per conversation and kind until the customer writes again: every new customer message
+    reopens the window, so a later failure is news again."""
+    since = ConversationService(db, business_id).last_inbound_at(conv.customer_id)
+    where = [Notification.kind == kind, Notification.entity_type == "conversation", Notification.entity_id == conv.id]
+    if since is not None:
+        where.append(Notification.created_at > since)
+    if NotificationRepo(db, business_id).first(*where) is None:
+        notify_owner(db, business_id, kind, body, entity_type="conversation", entity_id=conv.id)
+
+
+def _window_alert(conv: Conversation, msg: Message, last_inbound: datetime | None, *, by_meta: bool = False) -> str:
+    why = ("WhatsApp reports that more than 24 hours had passed since the customer's last message" if by_meta else
+           f"the customer {_seen(last_inbound)}, and WhatsApp only delivers normal messages within 24 hours of the "
+           "customer's last message")
+    return (f"⚠️ WhatsApp message not delivered to {_who(conv)}: {why}. Contact them another way (call or SMS), or "
+            f"wait until they write again.\nNot delivered: “{_quote(msg)}”")
+
+
 def _deliver_one(message_id: uuid.UUID, session_factory) -> None:
     db = session_factory()
+    outbox = None
     try:
         # Claim atomically so the inline path and the worker never both send the same message.
         claimed = db.execute(
@@ -137,12 +182,61 @@ def _deliver_one(message_id: uuid.UUID, session_factory) -> None:
         bind_context(business_id=business_id)
         msg = db.get(Message, message_id)
         conv = ConversationRepo(db, business_id).get(msg.conversation_id)
-        result = _send(db, business_id, conv.customer.whatsapp_number, msg.content, msg.send_attempts)
+        last_inbound = ConversationService(db, business_id).last_inbound_at(conv.customer_id)
+        closed = _outside_window(last_inbound)
+        if closed:
+            # Never attempted: WhatsApp would refuse it (or accept it and drop it later).
+            result = SendResult(ok=False, wa_message_id=None, delivery_status="failed", reason=OUTSIDE_WINDOW,
+                                error=f"Not sent: the customer {_seen(last_inbound)}; outside WhatsApp's 24-hour "
+                                      "window only approved template messages can be delivered")
+        else:
+            result = _send(db, business_id, conv.customer.whatsapp_number, msg.content, msg.send_attempts)
+        if not result.ok and result.reason == OUTSIDE_WINDOW:
+            conv = ConversationRepo(db, business_id).get(conv.id, for_update=True)  # one alert at a time
+            _alert_owner_once(db, business_id, conv, WINDOW_ALERT,
+                              _window_alert(conv, msg, last_inbound, by_meta=not closed))
         _record_message_result(msg, conv, result)
+        outbox = take_outbox(db)
         db.commit()
     finally:
         db.close()
         clear_context()
+    if outbox is not None:
+        deliver_outbox(outbox, session_factory)  # the owner alert, if one was queued
+
+
+def record_late_failure(db: Session, business_id: uuid.UUID, msg: Message, error_code: int | None,
+                        error_title: str | None) -> None:
+    """Meta accepted a message, then reported it failed (status webhook). The owner must not believe the customer
+    got it: record why, flag the conversation and alert the owner once. The caller commits; the alert is sent by
+    the outbox like any other."""
+    window = error_code == META_WINDOW_ERROR
+    detail = f"error {error_code}: {error_title or 'no details'}" if error_code else (error_title or "no details")
+    attrs = dict(msg.attributes or {})
+    attrs.update(error=f"WhatsApp reported this message as not delivered ({detail})",
+                 failure_reason=OUTSIDE_WINDOW if window else "whatsapp_failed")
+    if error_code:
+        attrs["error_code"] = error_code
+    msg.attributes, msg.delivery_status = attrs, "failed"
+    conv = ConversationRepo(db, business_id).get(msg.conversation_id)
+    if conv is None:
+        return
+    conv.needs_attention = True
+    log_event(logger, "outbox.failed_late", 40, operation="outbox.status", status="error", error=detail)
+    if window:
+        _alert_owner_once(db, business_id, conv, WINDOW_ALERT, _window_alert(conv, msg, None, by_meta=True))
+    else:
+        _alert_owner_once(db, business_id, conv, FAILED_ALERT,
+                          f"⚠️ WhatsApp could not deliver a message to {_who(conv)} ({detail}). Open the conversation "
+                          f"in the Duka dashboard.\nNot delivered: “{_quote(msg)}”")
+
+
+def record_late_notification_failure(n: Notification, error_code: int | None, error_title: str | None) -> None:
+    """An owner alert that Meta accepted and then failed: shown as failed, with the reason, in the dashboard."""
+    detail = f"error {error_code}: {error_title or 'no details'}" if error_code else (error_title or "no details")
+    hint = (" You have not written to your shop's WhatsApp number in 24 hours: set an approved owner-notification "
+            "template in Settings." if error_code == META_WINDOW_ERROR else "")
+    n.status, n.error = "failed", f"WhatsApp reported this alert as not delivered ({detail}).{hint}"
 
 
 def _record_message_result(msg: Message, conv: Conversation | None, result: SendResult) -> None:
@@ -150,9 +244,14 @@ def _record_message_result(msg: Message, conv: Conversation | None, result: Send
     msg.delivery_status, msg.next_send_at = _next_state(result, msg.send_attempts)
     if result.ok:
         msg.wa_message_id = result.wa_message_id
-        attrs.pop("error", None)
+        for key in ("error", "error_code", "failure_reason"):
+            attrs.pop(key, None)
     else:
         attrs["error"] = result.error
+        if result.reason:
+            attrs["failure_reason"] = result.reason
+        if result.error_code:
+            attrs["error_code"] = result.error_code
     if msg.delivery_status == "failed":
         if conv is not None:
             conv.needs_attention = True  # a customer did not get our message: staff should know

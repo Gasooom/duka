@@ -1,7 +1,6 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import TenantContext, get_tenant
 from app.schemas.api import KnowledgeIn, KnowledgeOut
@@ -24,14 +23,15 @@ def add_text(body: KnowledgeIn, ctx: TenantContext = Depends(get_tenant)):
 
 
 @router.post("/upload", response_model=KnowledgeOut, status_code=201)
-async def upload(file: UploadFile = File(...), title: str | None = Form(None), ctx: TenantContext = Depends(get_tenant)):
-    raw = await file.read(MAX_UPLOAD + 1)
+def upload(file: UploadFile = File(...), title: str | None = Form(None), ctx: TenantContext = Depends(get_tenant)):
+    """A plain function on purpose: FastAPI runs it in a worker thread, so reading a hostile PDF, embedding and
+    storing a large document never block the event loop (webhooks and health checks keep being answered)."""
+    raw = file.file.read(MAX_UPLOAD + 1)
     if len(raw) > MAX_UPLOAD:
         raise HTTPException(413, "File too large (max 5MB)")
     name = (file.filename or "document").lower()
     if name.endswith(".pdf"):
-        # CPU-bound and attacker-shaped (a hostile PDF can take seconds to refuse): never on the event loop.
-        content, kind = await run_in_threadpool(extract_pdf_text, raw), "pdf"
+        content, kind = extract_pdf_text(raw), "pdf"
     elif name.endswith((".txt", ".md")):
         content, kind = raw.decode("utf-8", errors="replace"), "file"
     else:

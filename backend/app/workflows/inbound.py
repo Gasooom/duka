@@ -26,11 +26,18 @@ from app.core.ratelimit import inbound_message_limiter
 from app.db.session import SessionLocal
 from app.i18n import media_label, t
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
-from app.models import Business, Message, Product, ProductCategory, WebhookEvent, WhatsAppAccount
+from app.models import Business, Message, Notification, Product, ProductCategory, WebhookEvent, WhatsAppAccount
 from app.repositories.repos import SettingsRepo
 from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
-from app.services.messaging_service import deliver_outbox, notify_owner, send_to_customer, take_outbox
+from app.services.messaging_service import (
+    deliver_outbox,
+    notify_owner,
+    record_late_failure,
+    record_late_notification_failure,
+    send_to_customer,
+    take_outbox,
+)
 from app.workflows.handoff import ai_paused_reply, conversation_language, handoff_reply, request_human
 
 logger = get_logger(__name__)
@@ -132,9 +139,18 @@ def _apply_statuses(db: Session, statuses: list[StatusUpdate]) -> None:
         # Scoped by the receiving number's tenant: a status can only touch that tenant's messages.
         msg = db.scalar(select(Message).where(Message.business_id == account.business_id,
                                               Message.wa_message_id == s.wa_message_id))
-        if msg is None or msg.delivery_status == s.status:
+        if msg is None:
+            if s.status == "failed":  # perhaps an owner alert (notifications are sent from the same number)
+                n = db.scalar(select(Notification).where(Notification.business_id == account.business_id,
+                                                         Notification.wa_message_id == s.wa_message_id))
+                if n is not None and n.status != "failed":
+                    record_late_notification_failure(n, s.error_code, s.error_title)
             continue
-        if s.status == "failed" or _STATUS_RANK.get(s.status, -1) > _STATUS_RANK.get(msg.delivery_status or "", -1):
+        if msg.delivery_status == s.status:
+            continue
+        if s.status == "failed":
+            record_late_failure(db, account.business_id, msg, s.error_code, s.error_title)
+        elif _STATUS_RANK.get(s.status, -1) > _STATUS_RANK.get(msg.delivery_status or "", -1):
             msg.delivery_status = s.status
 
 

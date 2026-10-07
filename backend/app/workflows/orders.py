@@ -1,16 +1,20 @@
 """Order and payment workflows: state change + audit + customer message + owner notification, in one
 transaction (messages go through the outbox, so they are only sent if the change commits)."""
 import uuid
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.db.session import SessionLocal
 from app.i18n import t
-from app.models import Business, Conversation, Customer, Message, Order, Payment, User
+from app.models import Business, Conversation, Customer, Message, Notification, Order, Payment, User
 from app.repositories.repos import ConversationRepo, SettingsRepo
 from app.services import audit_service
 from app.services.commerce_service import CheckoutService, OrderService, money
 from app.services.hours import closed_until
-from app.services.messaging_service import notify_owner, send_to_customer
+from app.services.messaging_service import deliver_outbox, notify_owner, send_to_customer, take_outbox
 from app.services.payment_service import PaymentService
 from app.workflows.handoff import conversation_language
 
@@ -115,3 +119,45 @@ def customer_reported_payment(db: Session, business_id: uuid.UUID, customer: Cus
                  "Check your MoMo/bank and record the payment in the Duka dashboard.",
                  entity_type="order", entity_id=order.id)
     return payment
+
+
+# ---------------------------------------------------------------- aging-order reminders (worker)
+REVIEW_REMINDER = "order_review_reminder"
+PAYMENT_REMINDER = "order_payment_reminder"
+
+
+def remind_aging_orders(session_factory=SessionLocal) -> int:
+    """Orders hold their stock until the owner acts. Remind the owner once per order and state: still waiting for
+    review ORDER_REVIEW_REMINDER_HOURS after it was placed, or accepted ORDER_PAYMENT_REMINDER_HOURS ago and still
+    unpaid. The reminder (a notification row) is its own record, so repeated or concurrent sweeps never repeat it.
+    Nothing else changes: no cancellation (a manual payment may already have been made), no stock movement, no
+    message to the customer. Runs across shops; every reminder goes to that order's own shop."""
+    now = datetime.now(timezone.utc)
+    rules = ((REVIEW_REMINDER, settings.order_review_reminder_hours, Order.created_at, (Order.status == "pending",)),
+             (PAYMENT_REMINDER, settings.order_payment_reminder_hours, Order.accepted_at,
+              (Order.status == "accepted", Order.payment_status != "paid")))
+    reminded = 0
+    with session_factory() as db:
+        for kind, hours, since, state in rules:
+            if hours <= 0:
+                continue
+            already = exists().where(Notification.business_id == Order.business_id, Notification.kind == kind,
+                                     Notification.entity_id == Order.id)
+            due = db.execute(
+                select(Order.id, Order.business_id, Order.order_number, Order.currency, Order.total, since)
+                .where(*state, since < now - timedelta(hours=hours), ~already)
+                .order_by(since).limit(200).with_for_update(of=Order, skip_locked=True)).all()
+            for order_id, business_id, number, currency, total, at in due:
+                waited = (now - at).total_seconds() / 3600
+                text = (f"⏰ Order {number} ({currency} {money(total)}) has been waiting {waited:.0f} hours for your "
+                        "review. Its stock stays reserved until you accept or cancel it in the Duka dashboard."
+                        if kind == REVIEW_REMINDER else
+                        f"⏰ Order {number} ({currency} {money(total)}) was accepted {waited:.0f} hours ago and is "
+                        "still unpaid. Its stock stays reserved: record the payment or cancel the order in the Duka "
+                        "dashboard.")
+                notify_owner(db, business_id, kind, text, entity_type="order", entity_id=order_id)
+            reminded += len(due)
+        outbox = take_outbox(db)
+        db.commit()
+    deliver_outbox(outbox, session_factory)
+    return reminded

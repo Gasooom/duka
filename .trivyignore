@@ -1,0 +1,7 @@
+# Ignore list for the production image scan (.github/workflows/ci.yml, job "image-scan").
+# The CI gate fails on any FIXABLE critical vulnerability; everything else is reported, not blocking.
+# Add an entry only when a fixable critical cannot be fixed yet: one ID per line, preceded by a comment with the
+# reason, who decided it and a review date, e.g.
+#   # <package>: <why it does not apply, or why it cannot be fixed yet>. Decided by <name>. Review by YYYY-MM-DD.
+#   CVE-YYYY-NNNNN
+# No entries.

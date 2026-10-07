@@ -43,6 +43,7 @@ check "dashboard not published (only via proxy)" 'unpublished frontend'
 check "restart policies set"                    '[ "$(docker inspect -f "{{.HostConfig.RestartPolicy.Name}}" $($COMPOSE ps -q) | sort -u)" = unless-stopped ]'
 check "log rotation configured"                 '[ "$(docker inspect -f "{{index .HostConfig.LogConfig.Config \"max-size\"}}" $($COMPOSE ps -q backend))" = 20m ]'
 check "no test tooling in the API image"        '! $COMPOSE exec -T backend python -c "import pytest"'
+check "no tests, evals or demo seed in the image" '$COMPOSE exec -T backend sh -c "test ! -e tests && test ! -e evals && test ! -e seed"'
 check "API runs as non-root"                    '[ "$($COMPOSE exec -T backend id -u)" != 0 ]'
 check "secrets not in logs"                     '! $COMPOSE logs --no-color 2>/dev/null | grep -qF "$VERIFY"'
 echo "$pass passed, $fail failed"

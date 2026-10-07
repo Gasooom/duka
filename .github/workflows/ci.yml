@@ -111,6 +111,39 @@ jobs:
           npm audit --omit=dev || true
           npm audit --omit=dev --audit-level=critical
 
+  image-scan:
+    name: Production image (runtime files only, Trivy vulnerability scan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the production image (INSTALL_DEV=false, as Render and deploy/ build it)
+        run: docker build --build-arg INSTALL_DEV=false -t duka-backend:ci backend
+      - name: No tests, evals or demo seed in the production image
+        run: docker run --rm --entrypoint sh duka-backend:ci -c 'test -d app && test -d alembic && test ! -e tests && test ! -e evals && test ! -e seed'
+      # Third-party action pinned to a full commit SHA, not a tag: trivy-action tags were repointed in a 2026 supply
+      # chain attack, and CVE-2026-26189 affects 0.31.0-0.34.0. This commit is v0.36.0 (it pins the Trivy binary).
+      - name: Vulnerability report (every severity; informational)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: duka-backend:ci
+          scanners: vuln
+          format: table
+          exit-code: "0"
+          trivyignores: .trivyignore
+      - name: Gate on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: duka-backend:ci
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+          trivyignores: .trivyignore
+
   ui-smoke:
     name: Dashboard in a browser (walk-through, live refresh, double submits, API outage)
     runs-on: ubuntu-24.04

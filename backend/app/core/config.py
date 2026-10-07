@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     whatsapp_graph_base_url: str = "https://graph.facebook.com"
     whatsapp_force_dev: bool = False  # route every outbound message through the dev adapter
     whatsapp_timeout_seconds: float = 10.0
+    # WhatsApp only delivers normal (non-template) messages within 24 h of the customer's last message. Older than
+    # this, a message to the customer is not attempted and the owner is told; the margin covers processing delays.
+    whatsapp_window_hours: float = 23.5
 
     # Payments
     payment_webhook_secret: str = ""  # HMAC secret for the mock provider callback
@@ -92,6 +95,10 @@ class Settings(BaseSettings):
     outbox_max_attempts: int = 5
     outbox_sending_timeout_seconds: int = 120
     webhook_event_retention_days: int = 30  # processed inbound payloads (PII) are purged after this
+    # Orders hold their stock until the owner acts. Remind the owner (once per order) when one has waited longer than
+    # this for review, or has been accepted this long ago and is still unpaid. 0 = no reminder.
+    order_review_reminder_hours: float = 2.0
+    order_payment_reminder_hours: float = 24.0
 
     # Operations: bearer token for /metrics and /readyz?details=1 (required to see them in production).
     ops_token: str = ""

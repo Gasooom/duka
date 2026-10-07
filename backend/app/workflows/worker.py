@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.ops import purge_processed_events
 from app.services.messaging_service import deliver_due, recover_stale_sends
 from app.workflows.inbound import claim, process_event, release
+from app.workflows.orders import remind_aging_orders
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,7 @@ class BackgroundWorkers:
         self._wake = threading.Event()
         self._last_recovery = 0.0
         self._last_purge = 0.0
+        self._last_reminders = 0.0
         self._inflight: set[uuid.UUID] = set()  # events claimed by this process and not finished yet
         self._inflight_lock = threading.Lock()
 
@@ -93,6 +95,9 @@ class BackgroundWorkers:
         if time.monotonic() - self._last_recovery > 30:
             self._last_recovery = time.monotonic()
             done += recover_stale_sends(self.session_factory)
+        if time.monotonic() - self._last_reminders > 300:  # orders waiting too long for the owner
+            self._last_reminders = time.monotonic()
+            done += remind_aging_orders(self.session_factory)
         if time.monotonic() - self._last_purge > 3600:
             self._last_purge = time.monotonic()
             with self.session_factory() as db:

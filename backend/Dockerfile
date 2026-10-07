@@ -7,7 +7,9 @@ COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && if [ "$INSTALL_DEV" = "true" ]; then pip install --no-cache-dir -r requirements-dev.txt; fi
 COPY . .
-RUN useradd -m appuser && chown -R appuser /app
+# Tests, evals and the demo seed (demo accounts with a known password) are for development and CI images only.
+RUN if [ "$INSTALL_DEV" != "true" ]; then rm -rf tests evals seed; fi \
+    && useradd -m appuser && chown -R appuser /app
 USER appuser
 EXPOSE 8000
 # Migrations run on start by default (Docker Compose: one instance). Platforms with a separate migration step

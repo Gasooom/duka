@@ -32,6 +32,8 @@ class StatusUpdate:
     wa_message_id: str
     status: str  # sent | delivered | read | failed
     recipient: str | None = None
+    error_code: int | None = None  # on 'failed', e.g. 131047 = more than 24 h since the customer's last message
+    error_title: str | None = None
 
 
 def parse_webhook(payload: dict[str, Any]) -> tuple[list[InboundMessage], list[StatusUpdate]]:
@@ -63,9 +65,17 @@ def parse_webhook(payload: dict[str, Any]) -> tuple[list[InboundMessage], list[S
                     profile_name=names.get(m.get("from")), timestamp=m.get("timestamp"), raw=m,
                 ))
             for s in value.get("statuses", []) or []:
+                error = ((s.get("errors") or [None])[0]) or {}
                 statuses.append(StatusUpdate(phone_number_id=str(phone_number_id), wa_message_id=str(s.get("id")),
-                                             status=str(s.get("status")), recipient=s.get("recipient_id")))
+                                             status=str(s.get("status")), recipient=s.get("recipient_id"),
+                                             error_code=meta_error_code(error.get("code")),
+                                             error_title=error.get("title") or error.get("message")))
     return messages, statuses
+
+
+def meta_error_code(value: Any) -> int | None:
+    """Meta's numeric error code, whether sent as a number or a string."""
+    return int(value) if isinstance(value, int) or (isinstance(value, str) and value.isdigit()) else None
 
 
 def build_text_webhook(phone_number_id: str, display_number: str, from_number: str, text: str,

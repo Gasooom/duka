@@ -33,9 +33,11 @@ def create_product(body: ProductIn, ctx: TenantContext = Depends(get_tenant)):
 
 
 @router.post("/products/import")
-async def import_products(file: UploadFile = File(...), skip_invalid: bool = False,
-                          ctx: TenantContext = Depends(get_tenant)):
-    raw = await file.read(MAX_CSV_BYTES + 1)
+def import_products(file: UploadFile = File(...), skip_invalid: bool = False,
+                    ctx: TenantContext = Depends(get_tenant)):
+    """A plain function on purpose: FastAPI runs it in a worker thread, so validating, storing and embedding a large
+    catalog never blocks the event loop (webhooks and health checks keep being answered)."""
+    raw = file.file.read(MAX_CSV_BYTES + 1)
     result = ProductService(ctx.db, ctx.business_id, actor=ctx.user).import_csv(raw, skip_invalid=skip_invalid)
     if result.imported:
         ctx.db.commit()

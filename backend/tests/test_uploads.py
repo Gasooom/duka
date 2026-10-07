@@ -1,15 +1,19 @@
 """Upload paths after the pypdf 6 / python-multipart 0.0.32 upgrades. Real PDFs are read; broken or hostile ones are
 refused with a clear 422 — quickly, never as a 500. Multipart parsing (which runs before authentication) refuses
 malformed bodies with a 4xx."""
+import threading
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.core.errors import ValidationError
 from app.db.session import SessionLocal
+from app.main import app
 from app.models import KnowledgeDocument
-from app.services.knowledge_service import extract_pdf_text
+from app.services.knowledge_service import KnowledgeService, extract_pdf_text
+from app.services.product_service import ProductService
 
 
 def pdf(text: str) -> bytes:
@@ -103,3 +107,30 @@ def test_multipart_is_refused_without_a_session_and_parsed_safely_when_malformed
 def test_csv_import_still_parses_multipart(fashion):
     r = fashion.import_csv("name,price,sku\nCanvas tote,15000,TOTE-1\n")
     assert r.status_code == 200 and r.json()["created"] == 1
+
+
+@pytest.mark.parametrize("kind", ["csv", "pdf"])
+def test_health_checks_are_answered_while_a_slow_upload_runs(fashion, monkeypatch, kind):
+    """Uploads do their heavy work (parsing, storing, embedding) in a worker thread: the event loop stays free for
+    webhooks and health checks however long an import takes."""
+    service, method = (ProductService, "import_csv") if kind == "csv" else (KnowledgeService, "add_document")
+    real = getattr(service, method)
+
+    def slow(*args, **kwargs):
+        time.sleep(2.0)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service, method, slow)
+    path, files = (("/api/products/import", {"file": ("p.csv", b"name,price,sku\nTote,1500,TOTE-9\n", "text/csv")})
+                   if kind == "csv" else ("/api/knowledge/upload", {"file": ("returns.pdf", GOOD, "application/pdf")}))
+    with TestClient(app) as shared:  # one event loop serves every request, as in a real server
+        done = {}
+        upload = threading.Thread(target=lambda: done.update(r=shared.post(path, headers=fashion.h, files=files)))
+        upload.start()
+        time.sleep(0.5)  # the upload is now inside its slow part
+        start = time.perf_counter()
+        health = shared.get("/healthz")
+        waited = time.perf_counter() - start
+        upload.join(15)
+    assert health.status_code == 200 and waited < 1.0, f"/healthz waited {waited:.2f}s behind the upload"
+    assert done["r"].status_code in (200, 201), done["r"].text

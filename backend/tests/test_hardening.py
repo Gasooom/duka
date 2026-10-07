@@ -133,3 +133,23 @@ def test_hosted_postgres_urls_use_the_installed_driver():
     for url in ("postgresql://u:p@dpg-x-a/duka", "postgres://u:p@dpg-x-a/duka"):
         assert Settings(database_url=url).database_url == "postgresql+psycopg://u:p@dpg-x-a/duka"
     assert Settings(database_url="postgresql+psycopg://u:p@h/d").database_url == "postgresql+psycopg://u:p@h/d"
+
+
+def test_demo_seed_refuses_production_before_touching_the_database(production, monkeypatch):
+    """The seed creates demo accounts with a published password: in production it must stop before any write."""
+    from sqlalchemy import func, select
+
+    from app.db.session import SessionLocal
+    from app.models import Business, User
+    from seed import seed as demo_seed
+
+    def no_database():
+        raise AssertionError("the seed opened a database session in production")
+
+    monkeypatch.setattr(demo_seed, "session_scope", no_database)
+    with pytest.raises(SystemExit) as stopped:
+        demo_seed.main()
+    assert "APP_ENV=production" in str(stopped.value.code)
+    with SessionLocal() as s:
+        assert s.scalar(select(func.count()).select_from(Business)) == 0
+        assert s.scalar(select(func.count()).select_from(User)) == 0
