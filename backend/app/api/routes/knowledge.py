@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import TenantContext, get_tenant
 from app.schemas.api import KnowledgeIn, KnowledgeOut
@@ -29,7 +30,8 @@ async def upload(file: UploadFile = File(...), title: str | None = Form(None), c
         raise HTTPException(413, "File too large (max 5MB)")
     name = (file.filename or "document").lower()
     if name.endswith(".pdf"):
-        content, kind = extract_pdf_text(raw), "pdf"
+        # CPU-bound and attacker-shaped (a hostile PDF can take seconds to refuse): never on the event loop.
+        content, kind = await run_in_threadpool(extract_pdf_text, raw), "pdf"
     elif name.endswith((".txt", ".md")):
         content, kind = raw.decode("utf-8", errors="replace"), "file"
     else:

@@ -78,6 +78,8 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(level)
     logging.getLogger("uvicorn.access").setLevel("WARNING")
     logging.getLogger("httpx").setLevel("WARNING")
+    # A malformed PDF upload makes pypdf log thousands of recovery warnings; the upload itself is refused (422).
+    logging.getLogger("pypdf").setLevel("ERROR")
 
 
 def get_logger(name: str) -> logging.Logger:

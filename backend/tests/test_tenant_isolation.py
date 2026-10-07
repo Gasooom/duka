@@ -129,9 +129,14 @@ def test_lists_searches_and_aggregates_only_show_own_rows(fashion, electronics, 
     b_snap = _snapshot(b)
     a_snap = _snapshot(a)
     for path in ("/api/orders", "/api/customers", "/api/conversations", "/api/knowledge",
-                 "/api/dashboard/notifications", "/api/dashboard/audit"):
+                 "/api/dashboard/notifications"):
         assert a_snap[path] == [], path
-    assert b_snap["/api/dashboard/notifications"] and b_snap["/api/dashboard/audit"]
+    # A's audit trail holds exactly its own setup (connecting its WhatsApp number, by its owner) and none of B's rows.
+    a_audit, b_audit = a_snap["/api/dashboard/audit"], b_snap["/api/dashboard/audit"]
+    assert [(e["action"], e["data"]["phone_number_id"]) for e in a_audit] == [("whatsapp.connected", a.phone_number_id)]
+    assert {e["actor_user_id"] for e in a_audit} == {a.get("/api/auth/me").json()["user"]["id"]}
+    assert not {e["id"] for e in a_audit} & {e["id"] for e in b_audit}
+    assert b_snap["/api/dashboard/notifications"] and b_audit
     for path in ("/api/products", "/api/categories", "/api/delivery-zones", "/api/whatsapp/accounts"):
         assert not {x["id"] for x in a_snap[path]} & {x["id"] for x in b_snap[path]}, path
     stats, usage = a_snap["/api/dashboard/stats"], a_snap["/api/dashboard/usage"]

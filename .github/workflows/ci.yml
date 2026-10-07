@@ -1,0 +1,149 @@
+# Continuous integration for every pull request and every push to main. The steps are the commands used locally
+# (Makefile, README > Tests); any failing lint, test, type check, build, required eval or audit fails the run.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff, pytest on PostgreSQL 16 + pgvector, offline evals)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:  # a throwaway database that only exists for this job
+          POSTGRES_USER: commerce
+          POSTGRES_PASSWORD: commerce
+          POSTGRES_DB: commerce
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U commerce"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgresql+psycopg://commerce:commerce@localhost:5432/commerce
+      TEST_DATABASE_URL: postgresql+psycopg://commerce:commerce@localhost:5432/commerce_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"  # same as backend/Dockerfile
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Create the test database
+        run: psql "postgresql://commerce:commerce@localhost:5432/commerce" -c "CREATE DATABASE commerce_test"
+      - name: Tests (real PostgreSQL + pgvector; schema built by alembic upgrade head)
+        run: pytest -q
+      - name: Offline AI evals, rules engine (fails on a regression or a critical failure)
+        run: python -m evals.run --provider rules
+      - name: Offline AI evals, adversarial model (the safety net must catch every lie)
+        run: python -m evals.run --provider adversarial
+
+  frontend:
+    name: Dashboard (type check, unit tests, production build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22  # same as frontend/Dockerfile
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Type check
+        run: npm run lint
+      - name: Unit tests (API client)
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Python packages (any known vulnerability fails the run)
+        run: |
+          pip install pip-audit==2.10.1
+          pip-audit -r backend/requirements-dev.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: npm packages (critical fails the run; the full report is always printed)
+        working-directory: frontend
+        # Known and accepted for now (high, build-time CSS processing of our own stylesheets): postcss <= 8.5.22
+        # bundled inside next 15 (GHSA-qx2v-qp2m-jg93, GHSA-6g55-p6wh-862q, GHSA-fxqj-rqcc-2cmp, GHSA-r28c-9q8g-f849).
+        # npm's only fix is next 16, a major upgrade done separately. Re-check when bumping next.
+        run: |
+          npm audit --omit=dev || true
+          npm audit --omit=dev --audit-level=critical
+
+  ui-smoke:
+    name: Dashboard in a browser (walk-through, live refresh, double submits, API outage)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: "Development settings (the committed template: public placeholders, offline rules engine)"
+        run: cp .env.example .env
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+      - name: Seed demo data
+        run: docker compose exec -T backend python -m seed.seed
+      - name: Wait for the dashboard
+        run: |
+          for i in $(seq 1 60); do curl -fsS -o /dev/null http://localhost:3000/login && exit 0; sleep 2; done
+          exit 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install Playwright (Chromium)
+        working-directory: scripts/ui-smoke
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: UI checks
+        working-directory: scripts/ui-smoke
+        run: npm run smoke
+      - name: Stack logs
+        if: failure()
+        run: docker compose logs --no-color --tail 300
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v

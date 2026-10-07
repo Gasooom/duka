@@ -6,6 +6,7 @@ __pycache__/
 node_modules/
 .next/
 frontend/next-env.d.ts
+*.tsbuildinfo
 *.log
 .DS_Store
 backups/

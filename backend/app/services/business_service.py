@@ -8,9 +8,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, PermissionDenied, ValidationError
-from app.core.security import create_access_token, encrypt_secret, hash_password, verify_password
+from app.core.logging import get_logger, log_event
+from app.core.security import (
+    create_access_token,
+    encrypt_secret,
+    hash_password,
+    pseudonym,
+    verify_password,
+    verify_password_or_dummy,
+)
 from app.models import AgentConfig, Business, BusinessSettings, User, WhatsAppAccount
 from app.repositories.repos import AgentConfigRepo, DeliveryZoneRepo, SettingsRepo, WhatsAppAccountRepo
+from app.services import audit_service
+
+logger = get_logger(__name__)
 
 BUSINESS_FIELDS = {
     "name", "description", "business_type", "logo_url", "phone", "address", "currency", "timezone", "language",
@@ -62,17 +73,37 @@ def register_business(db: Session, *, business_name: str, email: str, password: 
     return business, user, token
 
 
+def find_user(db: Session, email: str) -> User | None:
+    return db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
+
+
 def authenticate(db: Session, email: str, password: str) -> tuple[User, str]:
-    user = db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
-    if not user or not user.is_active or not verify_password(password, user.password_hash):
+    user = find_user(db, email)
+    valid = verify_password_or_dummy(password, user.password_hash if user else None)
+    if not user or not user.is_active or not valid:
         raise PermissionDenied("Invalid email or password", code="invalid_credentials")
     return user, create_access_token(user.id, user.business_id, user.role, user.token_version)
+
+
+def record_failed_login(db: Session, email: str, *, client_ip: str, failures: int, lockout_seconds: float) -> None:
+    """Security trail of a failed sign-in: a log line for every attempt (the email only as a pseudonym, never the
+    password) and, when the email belongs to an account, an audit event in that account's business. The caller
+    commits."""
+    user = find_user(db, email)
+    log_event(logger, "auth.login_failed", 30, operation="auth.login", status="rejected", account=pseudonym(email),
+              known_account=user is not None, client_ip=client_ip, failures=failures,
+              lockout_seconds=round(lockout_seconds))
+    if user is not None:
+        audit_service.record(db, user.business_id, "auth.login_failed", "user", user.id, actor_type="anonymous",
+                             client_ip=client_ip, failures=failures, lockout_seconds=round(lockout_seconds))
 
 
 def change_password(db: Session, user: User, current: str, new: str) -> None:
     if not verify_password(current, user.password_hash):
         raise PermissionDenied("Current password is incorrect", code="invalid_credentials")
     set_password(user, new)
+    audit_service.record(db, user.business_id, "auth.password_changed", "user", user.id, user=user,
+                         method="self_service", other_sessions_signed_out=True)
 
 
 def set_password(user: User, new: str) -> None:
@@ -90,9 +121,10 @@ def get_business(db: Session, business_id: uuid.UUID) -> Business:
 
 
 class BusinessConfigService:
-    def __init__(self, db: Session, business_id: uuid.UUID):
+    def __init__(self, db: Session, business_id: uuid.UUID, actor: User | None = None):
         self.db = db
         self.business_id = business_id
+        self.actor = actor  # the signed-in user making the change (audit trail); None = system, e.g. the seed
 
     @property
     def business(self) -> Business:
@@ -126,10 +158,15 @@ class BusinessConfigService:
 
     def update_agent_config(self, data: dict[str, Any]) -> AgentConfig:
         cfg = self.agent_config()
+        before = {k: getattr(cfg, k) for k in AGENT_FIELDS}
         for k, v in data.items():
             if k in AGENT_FIELDS:
                 setattr(cfg, k, Decimal(str(v)) if k == "temperature" and v is not None else v)
         self.db.flush()
+        changed = audit_service.changes(before, {k: getattr(cfg, k) for k in AGENT_FIELDS})
+        if changed:
+            audit_service.record(self.db, self.business_id, "agent_config.updated", "agent_config", cfg.id,
+                                 user=self.actor, changes=changed)
         return cfg
 
     def settings(self) -> BusinessSettings:
@@ -151,10 +188,20 @@ class BusinessConfigService:
             raise ValidationError("MTN MoMo is not configured on this platform yet; use manual payments")
         if data.get("owner_notification_phone"):
             data["owner_notification_phone"] = normalize_phone(data["owner_notification_phone"])
+        before = {k: getattr(s, k) for k in SETTINGS_FIELDS}
         for k, v in data.items():
             if k in SETTINGS_FIELDS and v is not None:
                 setattr(s, k, (v.strip() or None) if isinstance(v, str) and k != "payment_provider" else v)
         self.db.flush()
+        changed = audit_service.changes(before, {k: getattr(s, k) for k in SETTINGS_FIELDS})
+        # Where customers are told to send money is what an attacker would change: its own, searchable event.
+        instructions = changed.pop("payment_instructions", None)
+        if instructions:
+            audit_service.record(self.db, self.business_id, "settings.payment_instructions_changed",
+                                 "business_settings", s.id, user=self.actor, **instructions)
+        if changed:
+            audit_service.record(self.db, self.business_id, "settings.updated", "business_settings", s.id,
+                                 user=self.actor, changes=changed)
         return s
 
     # WhatsApp ---------------------------------------------------------
@@ -175,11 +222,17 @@ class BusinessConfigService:
         if other and other.business_id != self.business_id:
             raise ConflictError("This WhatsApp phone number is already connected to another business")
         repo = WhatsAppAccountRepo(self.db, self.business_id)
+        had_token = bool(other and other.access_token_encrypted)
         acct = other or repo.add(phone_number_id=phone_number_id, mode=mode)
         repo.update(acct, display_phone_number=display_phone_number, waba_id=waba_id, mode=mode, is_active=True)
         if access_token:
             acct.access_token_encrypted = encrypt_secret(access_token)
         self.db.flush()
+        # Whether the access token was set or replaced, never the token (not even encrypted).
+        audit_service.record(self.db, self.business_id, "whatsapp.connected", "whatsapp_account", acct.id,
+                             user=self.actor, phone_number_id=phone_number_id,
+                             display_phone_number=display_phone_number, mode=mode, reconnected=other is not None,
+                             credential=("replaced" if had_token else "set") if access_token else "unchanged")
         return acct
 
     def whatsapp_accounts(self) -> list[WhatsAppAccount]:
@@ -187,7 +240,10 @@ class BusinessConfigService:
 
     def delete_whatsapp(self, account_id: uuid.UUID) -> None:
         repo = WhatsAppAccountRepo(self.db, self.business_id)
-        repo.delete(repo.get_or_404(account_id))
+        acct = repo.get_or_404(account_id)
+        audit_service.record(self.db, self.business_id, "whatsapp.disconnected", "whatsapp_account", acct.id,
+                             user=self.actor, phone_number_id=acct.phone_number_id, mode=acct.mode)
+        repo.delete(acct)
 
     # Delivery zones ------------------------------------------------------
     def delivery_zones(self):

@@ -126,6 +126,12 @@ class AgentEngine:
         self.language = business.language or "en"
         repo = AgentConfigRepo(db, business.id)
         self.cfg = repo.first() or repo.add()
+        # The platform decides which models may be called (LLM_MODEL + LLM_ALLOWED_MODELS): a stored choice that is
+        # no longer allowed falls back to the default (None) instead of failing every reply.
+        self.model = settings.permitted_llm_model(self.cfg.model)
+        if self.cfg.model and self.model is None:
+            log_event(logger, "agent.model_not_allowed", 30, operation="agent", status="fallback",
+                      requested=self.cfg.model, model=settings.llm_model)
 
     # ------------------------------------------------------------------ context
     def _state_snapshot(self, customer: Customer, conv: Conversation) -> tuple[str, dict[str, Any]]:
@@ -220,7 +226,8 @@ class AgentEngine:
         self.language = conversation_language(conv, self.business)
         run = AgentRunRepo(self.db, self.business.id).add(
             conversation_id=conv.id, customer_id=customer.id, trigger_message_id=trigger.id,
-            provider=self.provider.name, model=self.cfg.model or (settings.llm_model if self.provider.is_llm else "rules"),
+            provider=self.provider.name,
+            model=(self.model or settings.llm_model) if self.provider.is_llm else (self.cfg.model or "rules"),
             status="running", input_text=trigger.content, steps=[], llm_calls=0)
         steps: list[dict[str, Any]] = []
         prompt_tokens = completion_tokens = 0
@@ -256,7 +263,7 @@ class AgentEngine:
                     if remaining < 1:
                         raise LLMError(f"Turn time budget ({settings.agent_turn_timeout_seconds}s) exhausted")
                     t0 = time.perf_counter()
-                    resp = self.provider.complete(messages, tool_schemas, model=self.cfg.model,
+                    resp = self.provider.complete(messages, tool_schemas, model=self.model,
                                                   temperature=float(self.cfg.temperature), timeout=remaining)
                     run.llm_calls += 1
                     prompt_tokens += resp.prompt_tokens or 0

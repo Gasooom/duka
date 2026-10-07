@@ -167,6 +167,30 @@ def claim(session_factory=SessionLocal, only_id: uuid.UUID | None = None) -> tup
         return (row[0], row[1]) if row else None
 
 
+# Rows being committed right now are locked by their own transaction: skipped, never waited for.
+_RELEASE_SQL = text("""
+UPDATE webhook_events
+   SET status = 'retry', next_attempt_at = now(), locked_until = NULL, updated_at = now(),
+       attempts = GREATEST(attempts - 1, 0)
+ WHERE id IN (SELECT id FROM webhook_events
+               WHERE id = ANY(CAST(:ids AS uuid[])) AND status = 'processing'
+                 FOR UPDATE SKIP LOCKED)
+RETURNING id
+""")
+
+
+def release(event_ids: list[uuid.UUID], session_factory=SessionLocal) -> int:
+    """Graceful shutdown: hand events this process claimed but did not finish back to the queue now, instead of
+    after their lease. The interrupted attempt is not counted: stopping is not the message's fault. Processing
+    again is safe (the inbound message insert is idempotent)."""
+    if not event_ids:
+        return 0
+    with session_factory() as db:
+        released = len(db.execute(_RELEASE_SQL, {"ids": [str(i) for i in event_ids]}).all())
+        db.commit()
+        return released
+
+
 def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLocal) -> ProcessResult:
     if attempts > settings.webhook_max_attempts:  # e.g. a message that kills the process every time
         _record_failure(session_factory, event_id, attempts, "Exceeded max attempts (lease expired repeatedly)")

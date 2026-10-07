@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app import ops
+from app.api.middleware import SecurityMiddleware
 from app.api.routes import auth, business, crm, dashboard, dev, knowledge, orders, products, webhooks
 from app.core.config import settings
 from app.core.errors import DomainError
@@ -38,6 +39,8 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan,
               openapi_url=None if settings.is_production else "/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+# Outside CORS (preflights get the headers too), inside request_context (a 413 still has a request id and is logged).
+app.add_middleware(SecurityMiddleware, max_body_bytes=settings.max_request_body_bytes, hsts=settings.is_production)
 _QUIET_PATHS = {"/healthz", "/readyz", "/health", "/metrics"}
 
 

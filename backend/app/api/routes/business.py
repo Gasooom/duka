@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api", tags=["business"])
 
 
 def svc(ctx: TenantContext) -> BusinessConfigService:
-    return BusinessConfigService(ctx.db, ctx.business_id)
+    return BusinessConfigService(ctx.db, ctx.business_id, actor=ctx.user)
 
 
 @router.get("/business", response_model=BusinessOut)

@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     database_url: str = "postgresql+psycopg://commerce:commerce@localhost:5432/commerce"
+    # Safety limits for every app connection, in milliseconds (0 = off; migrations use their own connection).
+    # One inbound message is one transaction that stays open through the AI turn, so a lock wait must outlast a
+    # turn holding the lock, and an idle transaction is only ended well after the turn budget (see
+    # _consistent_time_limits).
+    db_statement_timeout_ms: int = 60_000
+    db_lock_timeout_ms: int = 50_000
+    db_idle_in_transaction_timeout_ms: int = 120_000
 
     @field_validator("database_url")
     @classmethod
@@ -36,7 +43,10 @@ class Settings(BaseSettings):
     llm_provider: str = "rules"  # rules | openai_compat
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = "gpt-4o-mini"         # the platform default, always allowed
+    # Further models a business may choose for its assistant (comma-separated). Anything else is rejected when the
+    # assistant settings are saved; a stored choice the platform no longer allows falls back to LLM_MODEL.
+    llm_allowed_models: str = ""
     llm_timeout_seconds: float = 20.0      # per HTTP attempt (also capped by the turn budget)
     llm_max_attempts: int = 3              # bounded retries on 408/409/429/5xx/network errors
     llm_max_tokens: int = 500
@@ -75,7 +85,9 @@ class Settings(BaseSettings):
     # Durable inbound processing (webhook_events) and outbound delivery (outbox) workers.
     background_workers: int = 2           # worker threads per process; 0 disables (tests drain explicitly)
     worker_poll_seconds: float = 2.0
-    webhook_lease_seconds: int = 300      # a crashed worker's event is reclaimed after this
+    # A crashed worker's event is reclaimed after this. Longer than the slowest processing (a lock wait plus a full
+    # AI turn); a graceful shutdown hands unfinished events back at once instead.
+    webhook_lease_seconds: int = 120
     webhook_max_attempts: int = 5
     outbox_max_attempts: int = 5
     outbox_sending_timeout_seconds: int = 120
@@ -83,6 +95,13 @@ class Settings(BaseSettings):
 
     # Operations: bearer token for /metrics and /readyz?details=1 (required to see them in production).
     ops_token: str = ""
+
+    # HTTP hardening (app/api/middleware.py), independent of any reverse proxy.
+    max_request_body_bytes: int = 10 * 1024 * 1024
+    # Reverse proxies in front of the API that append the address they saw to X-Forwarded-For (Render: 1,
+    # deploy/ Caddy: 1, none: 0). Rate limits use the entry that many hops from the right; entries further left
+    # were written by the client and are ignored.
+    trusted_proxy_hops: int = 0
 
     enable_dev_tools: bool = True
     rate_limit_per_minute: int = 30
@@ -102,6 +121,35 @@ class Settings(BaseSettings):
         if bad:
             raise ValueError(f"{', '.join(bad)}: value starts with '#'. Put .env comments on their own line.")
         return self
+
+    @model_validator(mode="after")
+    def _consistent_time_limits(self) -> "Settings":
+        """The worker holds a conversation (and, while ordering, the business row) locked for up to a whole AI turn.
+        Refuse limits that would cancel normal work: a waiter must outlast that turn, the idle transaction around
+        an LLM call must not be ended, and the lease must not expire while the event is still being processed."""
+        turn_ms = self.agent_turn_timeout_seconds * 1000
+        lock, stmt, idle = self.db_lock_timeout_ms, self.db_statement_timeout_ms, self.db_idle_in_transaction_timeout_ms
+        problems = []
+        if lock and lock <= turn_ms:
+            problems.append("DB_LOCK_TIMEOUT_MS must be longer than AGENT_TURN_TIMEOUT_SECONDS")
+        if stmt and lock and stmt < lock:
+            problems.append("DB_STATEMENT_TIMEOUT_MS must be at least DB_LOCK_TIMEOUT_MS")
+        if idle and idle <= turn_ms:
+            problems.append("DB_IDLE_IN_TRANSACTION_TIMEOUT_MS must be longer than AGENT_TURN_TIMEOUT_SECONDS")
+        if self.webhook_lease_seconds * 1000 <= (lock or stmt) + turn_ms:
+            problems.append("WEBHOOK_LEASE_SECONDS must be longer than the DB lock timeout plus the AI turn budget")
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+    @property
+    def allowed_llm_models(self) -> list[str]:
+        extra = [m.strip() for m in self.llm_allowed_models.split(",") if m.strip()]
+        return list(dict.fromkeys([self.llm_model, *extra]))
+
+    def permitted_llm_model(self, requested: str | None) -> str | None:
+        """A business's own model choice while the platform allows it, else None (= the default, LLM_MODEL)."""
+        return requested if requested and requested in self.allowed_llm_models else None
 
     def production_problems(self) -> list[str]:
         """Configuration that must never reach production. main.py refuses to start if any is found."""

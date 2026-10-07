@@ -1,21 +1,41 @@
+import math
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import TenantContext, get_tenant
+from app.api.deps import TenantContext, client_ip, get_tenant
 from app.core.config import settings
-from app.core.ratelimit import auth_limiter
-from app.core.security import create_access_token
+from app.core.errors import PermissionDenied
+from app.core.logging import get_logger, log_event
+from app.core.ratelimit import auth_limiter, login_backoff
+from app.core.security import create_access_token, pseudonym
 from app.db.session import get_db
 from app.schemas.api import ChangePasswordIn, LoginIn, RegisterIn, TokenOut
 from app.services import business_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = get_logger(__name__)
 
 
-def _limit(request: Request) -> None:
-    ip = request.client.host if request.client else "unknown"
+def _limit(request: Request) -> str:
+    """Per client address (from TRUSTED_PROXY_HOPS, so a forged X-Forwarded-For gets no fresh allowance)."""
+    ip = client_ip(request)
     if not auth_limiter.allow(ip):
         raise HTTPException(429, "Too many attempts, try again in a minute")
+    return ip
+
+
+def _account_backoff(account: str, ip: str, operation: str) -> None:
+    """Per account, whoever is asking: after repeated wrong passwords the account is locked for a growing time.
+    Unknown emails are treated exactly like real ones, so this reveals nothing about which accounts exist."""
+    wait = login_backoff.retry_after(account)
+    if wait:
+        retry_after = math.ceil(wait)
+        log_event(logger, "auth.login_throttled", 30, operation=operation, status="throttled",
+                  account=pseudonym(account), client_ip=ip, retry_after=retry_after)
+        minutes = math.ceil(retry_after / 60)
+        raise HTTPException(429, f"Too many failed sign-in attempts. Try again in {minutes} minute"
+                                 f"{'s' if minutes != 1 else ''}.", headers={"Retry-After": str(retry_after)})
 
 
 def _user(u) -> dict:
@@ -36,8 +56,17 @@ def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenOut)
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
-    _limit(request)
-    user, token = business_service.authenticate(db, body.email, body.password)
+    ip = _limit(request)
+    account = body.email.strip().lower()
+    _account_backoff(account, ip, "auth.login")
+    try:
+        user, token = business_service.authenticate(db, body.email, body.password)
+    except PermissionDenied:
+        failures, lockout = login_backoff.failure(account)
+        business_service.record_failed_login(db, account, client_ip=ip, failures=failures, lockout_seconds=lockout)
+        db.commit()
+        raise
+    login_backoff.success(account)
     return TokenOut(access_token=token, business_id=user.business_id, user=_user(user))
 
 
@@ -51,9 +80,19 @@ def me(ctx: TenantContext = Depends(get_tenant)):
 
 @router.post("/change-password", response_model=TokenOut)
 def change_password(body: ChangePasswordIn, request: Request, ctx: TenantContext = Depends(get_tenant)):
-    """Other devices are signed out; this one gets a new token."""
-    _limit(request)
-    business_service.change_password(ctx.db, ctx.user, body.current_password, body.new_password)
+    """Other devices are signed out; this one gets a new token. Wrong current passwords count against the account
+    like failed sign-ins (a stolen session must not become a password-guessing oracle)."""
+    ip = _limit(request)
+    account = ctx.user.email.strip().lower()
+    _account_backoff(account, ip, "auth.change_password")
+    try:
+        business_service.change_password(ctx.db, ctx.user, body.current_password, body.new_password)
+    except PermissionDenied:
+        failures, lockout = login_backoff.failure(account)
+        log_event(logger, "auth.password_change_failed", 30, operation="auth.change_password", status="rejected",
+                  account=pseudonym(account), client_ip=ip, failures=failures, lockout_seconds=round(lockout))
+        raise
     ctx.db.commit()
+    login_backoff.success(account)
     token = create_access_token(ctx.user.id, ctx.business_id, ctx.user.role, ctx.user.token_version)
     return TokenOut(access_token=token, business_id=ctx.business_id, user=_user(ctx.user))

@@ -73,7 +73,13 @@ export default function BusinessPage() {
           <div className="md:col-span-2"><Field label="Fallback message" hint="Sent when the AI fails."><textarea name="fallback_message" rows={2} defaultValue={cfg.fallback_message} className="input" /></Field></div>
           <div className="md:col-span-2"><Field label="Business rules" hint="Short rules the assistant must follow, e.g. exchange policy or upsell guidance."><textarea name="business_rules" rows={3} defaultValue={cfg.business_rules || ""} className="input" /></Field></div>
           <div className="md:col-span-2"><Field label="Extra instructions (system prompt)"><textarea name="system_prompt" rows={3} defaultValue={cfg.system_prompt || ""} className="input" /></Field></div>
-          <Field label="Model override" hint="Blank = platform default (LLM_MODEL)"><input name="model" defaultValue={cfg.model || ""} className="input" /></Field>
+          <Field label="Model" hint={cfg.model && !cfg.available_models?.includes(cfg.model)
+            ? `"${cfg.model}" is no longer offered; the platform default is used.` : "Only models offered by the platform."}>
+            <select name="model" defaultValue={cfg.available_models?.includes(cfg.model) ? cfg.model : ""} className="input">
+              <option value="">Platform default ({cfg.default_model})</option>
+              {(cfg.available_models || []).map((m: string) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Temperature"><input name="temperature" type="number" step="0.05" min={0} max={1.5} defaultValue={cfg.temperature} className="input" /></Field>
             <Field label="History messages"><input name="max_history_messages" type="number" min={2} max={30} defaultValue={cfg.max_history_messages} className="input" /></Field>

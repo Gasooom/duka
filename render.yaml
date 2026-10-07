@@ -25,7 +25,10 @@ services:
       - key: RUN_MIGRATIONS_ON_START
         value: "false"       # the pre-deploy command migrates
       - key: FORWARDED_ALLOW_IPS
-        value: "*"           # only Render's proxy reaches the service; needed for real client IPs
+        value: "*"           # only Render's proxy reaches the service; uvicorn takes https from it
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"           # one proxy (Render's) in front; rate limits use the address it saw. Unverified until
+                             # the first deploy: docs/DEPLOYMENT.md > Render
       - key: PUBLIC_BASE_URL # https://<service>.onrender.com (or your domain)
         sync: false
       - key: CORS_ORIGINS    # the dashboard's origin once it is deployed; the API's own URL until then

@@ -26,7 +26,7 @@ from sqlalchemy import text  # noqa: E402
 
 from alembic import command  # noqa: E402
 from app.agents.providers import set_provider_override  # noqa: E402
-from app.core.ratelimit import auth_limiter, inbound_message_limiter  # noqa: E402
+from app.core.ratelimit import auth_limiter, inbound_message_limiter, login_backoff  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.integrations.whatsapp.adapters import SendResult, WhatsAppAdapter, set_adapter_override  # noqa: E402
@@ -54,6 +54,7 @@ def clean_db():
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     auth_limiter.reset()
     inbound_message_limiter.reset()
+    login_backoff.reset()
     set_provider_override(None)
     set_adapter_override(None)
     yield

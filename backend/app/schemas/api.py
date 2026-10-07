@@ -4,7 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_serializer, field_validator
+
+from app.core.config import settings
 
 
 class ORM(BaseModel):
@@ -90,6 +92,15 @@ class AgentConfigOut(ORM):
     def _t(self, v: Decimal) -> float:
         return float(v)
 
+    @computed_field
+    def default_model(self) -> str:
+        return settings.llm_model
+
+    @computed_field
+    def available_models(self) -> list[str]:
+        """The models this platform allows (LLM_MODEL + LLM_ALLOWED_MODELS); `model` must be one of them."""
+        return settings.allowed_llm_models
+
 
 class AgentConfigPatch(BaseModel):
     system_prompt: str | None = Field(None, max_length=4000)
@@ -101,6 +112,17 @@ class AgentConfigPatch(BaseModel):
     model: str | None = Field(None, max_length=100)
     temperature: float | None = Field(None, ge=0, le=1.5)
     max_history_messages: int | None = Field(None, ge=2, le=30)
+
+    @field_validator("model")
+    @classmethod
+    def _allowed_model(cls, v: str | None) -> str | None:
+        """Only models the platform operator allows: a typo or an expensive model is refused when the setting is
+        saved, not discovered as failed replies. Blank = the platform default."""
+        v = (v or "").strip() or None
+        if v is not None and v not in settings.allowed_llm_models:
+            raise ValueError(f"Model '{v}' is not available on this platform. "
+                             f"Choose one of: {', '.join(settings.allowed_llm_models)} (or leave blank for the default)")
+        return v
 
 
 class SettingsOut(ORM):

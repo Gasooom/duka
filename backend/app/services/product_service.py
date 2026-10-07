@@ -14,8 +14,9 @@ from sqlalchemy import Text, cast, func, literal, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationError
-from app.models import Business, InventoryMovement, Product, ProductCategory
+from app.models import Business, InventoryMovement, Product, ProductCategory, User
 from app.repositories.repos import CategoryRepo, InventoryRepo, ProductRepo, SettingsRepo
+from app.services import audit_service
 from app.services.embeddings import get_embedder
 
 STOPWORDS = {
@@ -123,9 +124,10 @@ class CsvImportResult:
 
 
 class ProductService:
-    def __init__(self, db: Session, business_id: uuid.UUID):
+    def __init__(self, db: Session, business_id: uuid.UUID, actor: User | None = None):
         self.db = db
         self.business_id = business_id
+        self.actor = actor  # the signed-in user making changes (audit trail of price changes)
         self.products = ProductRepo(db, business_id)
         self.categories = CategoryRepo(db, business_id)
         self.inventory = InventoryRepo(db, business_id)
@@ -175,7 +177,7 @@ class ProductService:
         self.db.flush()
         return p
 
-    def update(self, product_id: uuid.UUID, data: dict[str, Any]) -> Product:
+    def update(self, product_id: uuid.UUID, data: dict[str, Any], *, source: str = "api") -> Product:
         p = self.products.get_or_404(product_id)
         reembed = False
         if "sku" in data and data["sku"] and data["sku"] != p.sku:
@@ -190,6 +192,10 @@ class ProductService:
             price = Decimal(str(data["price"]))
             if price < 0:
                 raise ValidationError("Price cannot be negative")
+            if price != p.price:  # what customers are charged: every change is audited
+                audit_service.record(self.db, self.business_id, "product.price_changed", "product", p.id,
+                                     user=self.actor, sku=p.sku, currency=p.currency, source=source,
+                                     **{"from": str(p.price), "to": str(price)})
             p.price = price
         if "metadata" in data and data["metadata"] is not None:
             p.attributes = data["metadata"]
@@ -389,7 +395,8 @@ class ProductService:
         for r in valid_rows:
             existing = self.products.first(Product.sku == r["sku"]) if r["sku"] else None
             if existing:
-                self.update(existing.id, {k: v for k, v in r.items() if k != "sku"} | {"category": r["category"]})
+                self.update(existing.id, {k: v for k, v in r.items() if k != "sku"} | {"category": r["category"]},
+                            source="csv_import")
                 result.updated += 1
             else:
                 self.create(r, embed=False)

@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,27 @@ def verify_password(password: str, password_hash: str) -> bool:
         return bcrypt.checkpw(password.encode()[:72], password_hash.encode())
     except ValueError:
         return False
+
+
+_dummy_hash: str | None = None
+
+
+def verify_password_or_dummy(password: str, password_hash: str | None) -> bool:
+    """verify_password for an account that may not exist: an unknown email costs the same bcrypt work as a wrong
+    password, so response times do not reveal which emails have accounts."""
+    global _dummy_hash
+    if password_hash is None:
+        if _dummy_hash is None:
+            _dummy_hash = hash_password(secrets.token_urlsafe(16))
+        verify_password(password, _dummy_hash)
+        return False
+    return verify_password(password, password_hash)
+
+
+def pseudonym(value: str) -> str:
+    """Stable, non-reversible reference to a value for logs (e.g. a sign-in email): correlates events without
+    storing the value itself."""
+    return hmac_sha256(settings.jwt_secret, value.strip().lower().encode())[:16]
 
 
 def create_access_token(user_id: uuid.UUID, business_id: uuid.UUID, role: str, token_version: int = 0) -> str:

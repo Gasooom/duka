@@ -161,7 +161,7 @@ retention in Render's pricing page before creating it).
 | `ENCRYPTION_KEY` | **you**: a Fernet key, e.g. `python -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` (Render's generated values are not Fernet keys). Keep a copy outside Render: tokens encrypted with it cannot be read without it |
 | `LLM_API_KEY` | **you**: the OpenAI key |
 | `WHATSAPP_APP_SECRET` | **you**: the Meta app secret. The app refuses to start without one. Until Meta is connected, use a random value (`python -c "import secrets;print(secrets.token_urlsafe(32))"`) and replace it with the real app secret when connecting Meta |
-| everything else | fixed in `render.yaml`: `APP_ENV=production`, `RUN_MIGRATIONS_ON_START=false`, `FORWARDED_ALLOW_IPS=*`, `LLM_PROVIDER/BASE_URL/MODEL`, `EMBEDDING_PROVIDER=hash`, `ENABLE_DEV_TOOLS=false`, `ALLOW_PUBLIC_REGISTRATION=false`, … |
+| everything else | fixed in `render.yaml`: `APP_ENV=production`, `RUN_MIGRATIONS_ON_START=false`, `FORWARDED_ALLOW_IPS=*`, `TRUSTED_PROXY_HOPS=1`, `LLM_PROVIDER/BASE_URL/MODEL`, `EMBEDDING_PROVIDER=hash`, `ENABLE_DEV_TOOLS=false`, `ALLOW_PUBLIC_REGISTRATION=false`, … |
 
 Never commit any of these values. `.env` and `deploy/.env.*` are git-ignored, and nothing is baked into the image.
 At startup the backend refuses production with a weak or missing secret, a non-https URL, no real LLM, or the
@@ -180,6 +180,24 @@ default database password.
   stuck behind an OpenAI outage, and restarting the service would not fix that.
 - `/readyz?details=1` and `/metrics` need `Authorization: Bearer $OPS_TOKEN`.
 
+**Protections in the app itself** (Render has no Caddy in front; on the self-hosted stack Caddy sets the same
+headers too):
+- Security headers on every response (`nosniff`, `X-Frame-Options: DENY`, referrer and permissions policies, a
+  `default-src 'none'` CSP, `Cache-Control: no-store` on `/api/*`, HSTS in production), no `Server` header, and a
+  10 MB request-body limit (`MAX_REQUEST_BODY_BYTES`). Larger requests, webhooks included, get 413: at once when
+  they declare their length, otherwise as soon as the limit is passed.
+- Sign-in throttling: 20 attempts per minute per client address, and per account a lock after 5 wrong passwords
+  (30 s, doubling up to 15 min) whoever is asking. Failed sign-ins are logged (email as a pseudonym, never the
+  password) and audited. The client address is the entry `TRUSTED_PROXY_HOPS` from the right of
+  `X-Forwarded-For`, so a forged header changes nothing.
+- Database limits on every app connection: statements 60 s, lock waits 50 s, idle transactions 120 s
+  (`DB_STATEMENT_TIMEOUT_MS`, `DB_LOCK_TIMEOUT_MS`, `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS`). An inbound WhatsApp event
+  whose worker dies is retried after 120 s (`WEBHOOK_LEASE_SECONDS`); on a normal shutdown or deploy, unfinished
+  events are handed back at once. The app refuses to start if these limits do not fit the 45 s AI turn budget.
+- Only the models in `LLM_MODEL` + `LLM_ALLOWED_MODELS` can be chosen per business.
+- Changes to payment instructions, prices, WhatsApp numbers, passwords and the AI settings are recorded in the
+  append-only `audit_events` table (who, when, before/after; never a password or token).
+
 **Verify after the first deploy** (`BASE=https://duka-api.onrender.com`):
 
 ```bash
@@ -192,7 +210,14 @@ curl -s -o /dev/null -w '%{http_code}
 ' -X POST -H 'content-type: application/json'   -d '{"business_name":"X Y","email":"x@y.rw","password":"password123"}' $BASE/api/auth/register   # 403
 curl -s -o /dev/null -w '%{http_code}
 ' -X POST -d '{}' $BASE/webhooks/whatsapp                  # 401 (unsigned)
+curl -s -D - -o /dev/null $BASE/healthz | grep -iE 'nosniff|x-frame-options|strict-transport'   # 3 lines; no "server: uvicorn"
 ```
+
+Check the client address once: sign in with a wrong password from your machine, then find the `auth.login_failed`
+line in the service logs. Its `client_ip` must be your public IP address. If it shows any other address (an
+internal 10.x, 172.16–31.x or 192.168.x one, or a proxy's), there is one more proxy hop: set
+`TRUSTED_PROXY_HOPS=2` and check again. Never set it higher than the number of proxies, because the entries further
+left are written by the client.
 
 Then, in the service's Shell:
 - `python -m app.cli llm-check` checks the OpenAI connection.

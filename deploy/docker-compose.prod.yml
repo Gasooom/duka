@@ -40,6 +40,7 @@ services:
       PUBLIC_BASE_URL: https://${DUKA_DOMAIN:?set DUKA_DOMAIN in the env file}
       CORS_ORIGINS: https://${DUKA_DOMAIN}
       FORWARDED_ALLOW_IPS: "*"   # only caddy can reach the backend
+      TRUSTED_PROXY_HOPS: "1"    # caddy sets X-Forwarded-For to the client it saw (rate limits)
     depends_on:
       db: {condition: service_healthy}
     healthcheck:

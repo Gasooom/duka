@@ -38,8 +38,14 @@ async function apiCall(method, path, body, token) {
   await page.waitForURL("**/dashboard");
   await page.waitForSelector("text=Overview");
   check("login lands on the overview", true);
-  check("setup checklist is shown", await seen(page, "text=Before real customers write in"));
-  check("platform AI warning is honest", await seen(page, "text=AI language model not configured"));
+  // The checklist shows the server's real state (e.g. the platform AI line differs between the offline rules
+  // engine and a connected language model), so it is compared with the API, not with a fixed text.
+  const setup = await apiCall("GET", "/api/dashboard/setup", null, T);
+  const platformAi = setup.checks.find((c) => c.key === "platform_ai");
+  check("setup checklist is shown while setup is incomplete",
+    setup.ready || await seen(page, "text=Before real customers write in"));
+  check("platform AI status matches the server", setup.ready || await seen(page, `text=${platformAi.message}`),
+    platformAi.message);
   await page.waitForSelector("text=Your alerts");
   check("owner alerts list shows the new order", await seen(page, `text=New order ${order.order_number}`));
   const ordersBadge = await page.locator("nav a[href='/dashboard/orders'] span.rounded-full").textContent().catch(() => null);

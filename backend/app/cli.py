@@ -36,6 +36,7 @@ def reset_password(args: argparse.Namespace) -> int:
     from sqlalchemy import func, select
 
     from app.models import User
+    from app.services import audit_service
     from app.services.business_service import set_password
     password = args.password or secrets.token_urlsafe(18)
     with session_scope() as db:
@@ -48,6 +49,8 @@ def reset_password(args: argparse.Namespace) -> int:
         except DomainError as exc:
             print(f"error: {exc.message}", file=sys.stderr)
             return 1
+        audit_service.record(db, user.business_id, "auth.password_reset", "user", user.id, actor_type="system",
+                             method="cli", generated=not args.password, other_sessions_signed_out=True)
     print(f"Password reset for {args.email}")
     if not args.password:
         print(f"Generated password (shown once): {password}")

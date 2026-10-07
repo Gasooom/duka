@@ -36,7 +36,7 @@ def create_product(body: ProductIn, ctx: TenantContext = Depends(get_tenant)):
 async def import_products(file: UploadFile = File(...), skip_invalid: bool = False,
                           ctx: TenantContext = Depends(get_tenant)):
     raw = await file.read(MAX_CSV_BYTES + 1)
-    result = ProductService(ctx.db, ctx.business_id).import_csv(raw, skip_invalid=skip_invalid)
+    result = ProductService(ctx.db, ctx.business_id, actor=ctx.user).import_csv(raw, skip_invalid=skip_invalid)
     if result.imported:
         ctx.db.commit()
     else:
@@ -52,7 +52,7 @@ def get_product(product_id: uuid.UUID, ctx: TenantContext = Depends(get_tenant))
 
 @router.patch("/products/{product_id}", response_model=ProductOut)
 def update_product(product_id: uuid.UUID, body: ProductPatch, ctx: TenantContext = Depends(get_tenant)):
-    p = ProductService(ctx.db, ctx.business_id).update(product_id, body.model_dump(exclude_unset=True))
+    p = ProductService(ctx.db, ctx.business_id, actor=ctx.user).update(product_id, body.model_dump(exclude_unset=True))
     ctx.db.commit()
     return ProductOut.of(p)
 

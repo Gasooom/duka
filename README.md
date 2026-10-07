@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 237 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 411 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -92,13 +92,29 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, v1.2.0: 71 conversations, three stores) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
 | `test_language.py` | Language detection (incl. Sudanese vs standard Arabic), persistence, confident switches only, code-switching, every server message in the conversation language, facts identical across languages, Arabic digits in the grounding check |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets, expired and unsigned (`alg: none`) tokens refused |
+| `test_http_security.py` | Security headers on every response (errors, preflights and health checks too), HSTS only in production, the 10 MB body limit with and without a Content-Length (webhooks and uploads: 413, nothing stored), a signed webhook streamed without a length still verifies, per-route limits still apply |
+| `test_uploads.py` | Real PDFs are read; malformed, truncated and hostile PDFs get a quick 422; malformed multipart bodies (no boundary, oversized boundary or part header, no end) get a 4xx with or without a session |
+| `test_login_throttle.py` | Per-account lockout with growing waits whoever asks, unknown emails indistinguishable (same answers, same bcrypt work), the per-address limit uses the trusted proxy hop (a forged `X-Forwarded-For` changes nothing), bounded memory, failed sign-ins logged without password or email and audited, wrong current passwords count too |
+| `test_audit_events.py` | Payment instructions, settings and the AI pause, prices (dashboard and CSV), WhatsApp numbers, password change/reset and the AI settings are audited with who and before/after; a sweep of the whole table finds no password, token, hash or key |
+| `test_model_allowlist.py` | Only `LLM_MODEL` + `LLM_ALLOWED_MODELS` can be saved (422 otherwise), the assistant calls the chosen model, a stored model that is no longer allowed falls back to the default |
+| `test_db_limits.py` | Statement, lock and idle-transaction timeouts on every connection and checked against the AI turn budget; a lock timeout becomes a retry (no lost message); an idle transaction is ended and the pool recovers; a graceful shutdown hands unfinished events back at once |
 
 ---
 
-Dashboard smoke test in a real browser (needs the Docker stack running and seeded):
+Dashboard unit tests (the API client: a double click never sends a write twice) and type check:
+```bash
+cd frontend && npm test && npm run lint
+```
+
+Dashboard checks in a real browser (needs the Docker stack running and seeded): walk-through, live refresh, double
+submits, and the API going down and coming back (`outage.js` stops and restarts the backend container):
 ```bash
 cd scripts/ui-smoke && npm install && npm run setup && npm run smoke
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every pull request and push to `main`: ruff, the backend
+suite on PostgreSQL 16 + pgvector, the offline evals, the dashboard type check, unit tests and production build,
+the browser checks against the Docker stack, and a dependency audit (`pip-audit`; `npm audit` fails on critical).
 
 Agent evaluation (versioned cases, reports with transcripts):
 ```bash
@@ -214,7 +230,15 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 - WhatsApp tokens are encrypted at rest (`ENCRYPTION_KEY` is required in production) and never returned by the API.
 - Production refuses to start without `JWT_SECRET`, and turns off the simulator and the mock callbacks.
 - All queries go through the ORM or bound parameters. Validation uses Pydantic and size limits apply to CSV and
-  uploads. Auth and inbound messages are rate limited per process.
+  uploads. Inbound messages are rate limited per customer, in process.
+- Sign-in is throttled per client address and per account (growing lockout after 5 wrong passwords, unknown emails
+  treated the same). The client address comes from `TRUSTED_PROXY_HOPS`, never from what a client writes in
+  `X-Forwarded-For`.
+- The app itself sends security headers (nosniff, frame denial, CSP, HSTS in production) and refuses request bodies
+  over 10 MB, so this holds without a reverse proxy.
+- Payment instructions, prices, WhatsApp numbers, passwords and AI settings changes go to the append-only audit
+  table (never a secret). Businesses can only pick models the platform allows (`LLM_ALLOWED_MODELS`).
+- Every database connection has statement, lock and idle-transaction timeouts sized around the AI turn budget.
 - The frontend proxies `/api` on the server side. No API keys ever reach the browser.
 
 ## Future work (deliberately out of V1)

@@ -1,10 +1,10 @@
 {
   "name": "duka-ui-smoke",
   "private": true,
-  "description": "Headless walk-through of the merchant dashboard against a running dev stack (docker compose up + make seed).",
+  "description": "Headless checks of the merchant dashboard against a running dev stack (docker compose up + make seed): walk-through, live refresh, double submits, API outage.",
   "scripts": {
     "setup": "npx playwright install chromium",
-    "smoke": "node smoke.js && node live_refresh.js"
+    "smoke": "node smoke.js && node live_refresh.js && node double_submit.js && node outage.js"
   },
   "devDependencies": {
     "playwright": "1.63.0"
