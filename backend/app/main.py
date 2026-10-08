@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.errors import DomainError
 from app.core.logging import clear_context, configure_logging, get_logger, log_event, request_id_var, safe_error
 from app.db.session import SessionLocal
+from app.services.pricing import current_price_list
 from app.workflows.worker import workers
 
 configure_logging(settings.log_level)
@@ -23,6 +24,8 @@ access_logger = get_logger("app.access")
 
 if settings.is_production and settings.production_problems():
     raise RuntimeError("Refusing to start in production:\n- " + "\n- ".join(settings.production_problems()))
+if settings.usage_pricing_file:
+    current_price_list()  # refuse to start with a broken price list (PricingError says why), not record usage unpriced
 
 
 @asynccontextmanager

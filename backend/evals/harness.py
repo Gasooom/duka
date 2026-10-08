@@ -312,7 +312,9 @@ class Harness:
     # -- run
     def run(self, cases: list[dict], include_llm_cases: bool) -> list[CaseResult]:
         results = []
-        set_provider_override(provider_for(self.provider_name))
+        provider = provider_for(self.provider_name)
+        provider.metered = False  # evaluation runs are platform activity, never a tenant's usage (usage_events)
+        set_provider_override(provider)
         try:
             for case in cases:
                 if case.get("requires_llm") and not include_llm_cases:

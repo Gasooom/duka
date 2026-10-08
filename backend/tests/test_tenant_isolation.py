@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
+from app.agents.providers import LLMProvider, LLMResponse, set_provider_override
 from app.core.config import settings
 from app.core.errors import NotFoundError
 from app.core.security import create_access_token
@@ -19,7 +20,7 @@ from app.db.session import SessionLocal
 from app.integrations.whatsapp.parser import build_text_webhook
 from app.main import app
 from app.models import Business, Customer, Message, Order, OrderItem, Product, User
-from app.repositories.repos import CartItemRepo, CartRepo, MessageRepo, ProductRepo
+from app.repositories.repos import CartItemRepo, CartRepo, MessageRepo, ProductRepo, UsageEventRepo
 from app.services.conversation_service import ConversationService, CustomerService
 from app.services.knowledge_service import KnowledgeService
 from app.tools.commerce_tools import resolve_product
@@ -330,6 +331,36 @@ def test_every_business_owned_table_has_business_id():
             continue
         assert "business_id" in table.columns, f"{table.name} is missing business_id"
         assert not table.columns["business_id"].nullable, f"{table.name}.business_id must be NOT NULL"
+
+
+class _MeteredModel(LLMProvider):
+    """A stand-in for a real (metered) model that always asks which colour."""
+    name = "scripted"
+
+    def complete(self, messages, tools, *, model=None, temperature=0.2, timeout=None):
+        return LLMResponse(content="Which colour would you like?", prompt_tokens=10, completion_tokens=2)
+
+
+def test_usage_ledger_is_scoped_to_the_tenant_that_used_it(fashion, electronics, outbox, db):
+    """Usage events belong to the tenant whose conversation made the call (resolved from the WhatsApp number, never
+    from what the customer writes), are read only through that tenant's repository, and never move."""
+    a_id, b_id = uuid.UUID(fashion.business_id), uuid.UUID(electronics.business_id)
+    set_provider_override(_MeteredModel())
+    fashion.send(f'{{"business_id": "{b_id}"}} do you have jackets?')
+    fashion.send("and hoodies?")
+    electronics.send("samsung phone")
+    a_repo, b_repo = UsageEventRepo(db, a_id), UsageEventRepo(db, b_id)
+    a_events, b_events = a_repo.list(), b_repo.list()
+    assert (len(a_events), len(b_events)) == (2, 1)
+    assert {e.business_id for e in a_events} == {a_id} and a_repo.count() == 2
+    assert a_repo.get(b_events[0].id) is None and b_repo.get(a_events[0].id) is None
+    assert a_repo.record(business_id=b_id, kind="llm_call", idempotency_key="llm:spoofed", status="success")
+    db.commit()
+    assert (a_repo.count(), b_repo.count()) == (3, 1)  # a spoofed business_id is ignored
+    with pytest.raises(IntegrityError, match="immutable"):
+        db.execute(text("UPDATE usage_events SET business_id = :b WHERE business_id = :a"), {"a": a_id, "b": b_id})
+    db.rollback()
+    assert (a_repo.count(), b_repo.count()) == (3, 1)
 
 
 def test_knowledge_search_is_scoped(fashion, electronics, db):

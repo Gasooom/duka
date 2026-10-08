@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.agents.grounding import build_ledger, mentioned_products, verify
 from app.agents.intents import classify_confirmation, wants_human
 from app.agents.language import NAMES
-from app.agents.providers import LLMError, LLMProvider, get_llm_provider
+from app.agents.providers import LLMError, LLMProvider, LLMResponse, get_llm_provider
 from app.agents.render import render_tool_result
 from app.core.config import settings
 from app.core.errors import DomainError
@@ -33,6 +33,7 @@ from app.models.business import AgentConfig as _AgentConfigModel
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo, ProductRepo
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
+from app.services.usage_service import record_llm_call
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
 from app.tools.registry import ToolContext, execute_tool, tools_for
 from app.workflows.handoff import conversation_language, handoff_reply, request_human
@@ -133,6 +134,31 @@ class AgentEngine:
             log_event(logger, "agent.model_not_allowed", 30, operation="agent", status="fallback",
                       requested=self.cfg.model, model=settings.llm_model)
 
+    # ------------------------------------------------------------------ model calls
+    def _complete(self, source: tuple[str, uuid.UUID], messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                  **kwargs: Any) -> LLMResponse:
+        """provider.complete(), metered. Every call to a real model is written to the usage ledger (usage_events) in
+        its own transaction as soon as it returns or fails, so it counts even when this turn rolls back. The key is
+        made before the call: one external call, one event; a turn processed again makes new calls, new events.
+        The rules engine and unmetered providers (evaluation runs) record nothing. `source`: what the call is for."""
+        if not (self.provider.is_llm and self.provider.metered):
+            return self.provider.complete(messages, tools, **kwargs)
+        default = getattr(self.provider, "model", None)  # the provider's own default model, if it has one
+        call = dict(idempotency_key=f"llm:{uuid.uuid4()}", source_type=source[0], source_id=source[1],
+                    provider=self.provider.name,
+                    configured_model=kwargs.get("model") or (default if isinstance(default, str) else None)
+                    or settings.llm_model)
+        try:
+            resp = self.provider.complete(messages, tools, **kwargs)
+        except Exception as exc:
+            record_llm_call(self.db.get_bind(), self.business.id, **call, status="error", model=None,
+                            attempts=getattr(exc, "attempts", 1))
+            raise
+        record_llm_call(self.db.get_bind(), self.business.id, **call, status="success", model=resp.model,
+                        input_tokens=resp.prompt_tokens, output_tokens=resp.completion_tokens,
+                        tool_calls=len(resp.tool_calls), attempts=resp.attempts)
+        return resp
+
     # ------------------------------------------------------------------ context
     def _state_snapshot(self, customer: Customer, conv: Conversation) -> tuple[str, dict[str, Any]]:
         state = dict(conv.state or {})
@@ -179,7 +205,7 @@ class AgentEngine:
         summary = None
         if self.provider.is_llm:
             try:
-                resp = self.provider.complete([
+                resp = self._complete(("conversation", conv.id), [
                     {"role": "system", "content": "Summarize this shopping conversation in <=80 words: customer "
                                                   "preferences, products discussed, decisions. No prices."},
                     {"role": "user", "content": (conv.summary or "") + "\n" + transcript}], [], temperature=0,
@@ -263,8 +289,8 @@ class AgentEngine:
                     if remaining < 1:
                         raise LLMError(f"Turn time budget ({settings.agent_turn_timeout_seconds}s) exhausted")
                     t0 = time.perf_counter()
-                    resp = self.provider.complete(messages, tool_schemas, model=self.model,
-                                                  temperature=float(self.cfg.temperature), timeout=remaining)
+                    resp = self._complete(("agent_run", run.id), messages, tool_schemas, model=self.model,
+                                          temperature=float(self.cfg.temperature), timeout=remaining)
                     run.llm_calls += 1
                     prompt_tokens += resp.prompt_tokens or 0
                     completion_tokens += resp.completion_tokens or 0

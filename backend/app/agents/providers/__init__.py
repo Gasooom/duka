@@ -13,12 +13,13 @@ class UnavailableProvider(LLMProvider):
     """Stands in for a provider that cannot be built (e.g. missing key): every call fails like an outage, so the
     customer gets the fallback message and the run is recorded as an error instead of the turn crashing."""
     name = "unavailable"
+    metered = False  # no model is ever called
 
     def __init__(self, reason: str):
         self.reason = reason
 
     def complete(self, messages, tools, *, model=None, temperature=0.2, timeout=None) -> LLMResponse:
-        raise LLMError(self.reason)
+        raise LLMError(self.reason, attempts=0)
 
 
 def get_llm_provider() -> LLMProvider:

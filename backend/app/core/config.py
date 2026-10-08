@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     agent_max_tool_iterations: int = 5
     agent_summary_trigger_messages: int = 24
 
+    # Usage metering: path of the operator's price list (JSON, format in app/services/pricing.py). Duka ships no
+    # prices; without it every AI model call is still recorded in usage_events, unpriced.
+    usage_pricing_file: str = ""
+
     # Embeddings (dimension is fixed by migration 0001: 384)
     embedding_provider: str = "hash"  # hash | openai_compat
     embedding_base_url: str = "https://api.openai.com/v1"

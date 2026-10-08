@@ -49,12 +49,14 @@ class OpenAICompatProvider(LLMProvider):
             body["tool_choice"] = "auto"
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout * self.max_attempts)
         last_err = None
+        sent = 0  # requests sent so far (usage metering counts them)
         for attempt in range(1, self.max_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining < MIN_ATTEMPT_SECONDS:
                 last_err = last_err or "no time left in the turn budget"
                 break
             retry_after = None
+            sent = attempt
             try:
                 r = self.client.post(f"{self.base_url}/chat/completions", json=body,
                                      headers={"Authorization": f"Bearer {self.api_key}"},
@@ -63,8 +65,8 @@ class OpenAICompatProvider(LLMProvider):
                     try:
                         data = r.json()
                     except ValueError as exc:
-                        raise LLMError(f"Malformed LLM response (not JSON): {r.text[:200]}") from exc
-                    return self._parse(data, body["model"])
+                        raise LLMError(f"Malformed LLM response (not JSON): {r.text[:200]}", attempts=sent) from exc
+                    return self._parse(data, attempts=sent)
                 last_err = f"HTTP {r.status_code}: {r.text[:300]}"
                 if r.status_code not in RETRYABLE:
                     break
@@ -76,14 +78,14 @@ class OpenAICompatProvider(LLMProvider):
                 if deadline - time.monotonic() - pause < MIN_ATTEMPT_SECONDS:
                     break
                 time.sleep(pause)
-        raise LLMError(f"LLM request failed: {last_err}")
+        raise LLMError(f"LLM request failed: {last_err}", attempts=sent)
 
     @staticmethod
-    def _parse(data: dict[str, Any], model: str) -> LLMResponse:
+    def _parse(data: dict[str, Any], attempts: int = 1) -> LLMResponse:
         try:
             msg = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"Malformed LLM response: {str(data)[:200]}") from exc
+            raise LLMError(f"Malformed LLM response: {str(data)[:200]}", attempts=attempts) from exc
         content = msg.get("content")
         if isinstance(content, list):  # some providers return content parts
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
@@ -99,8 +101,10 @@ class OpenAICompatProvider(LLMProvider):
                 args = {"__invalid_json__": str(raw)[:200]}  # rejected by the tool's schema (extra=forbid)
             calls.append(ToolCall(id=tc.get("id") or f"call_{len(calls)}", name=fn.get("name") or "", arguments=args))
         usage = data.get("usage") or {}
+        served = data.get("model")  # the served model as the provider reports it, never assumed from the request
         return LLMResponse(content=content, tool_calls=calls, prompt_tokens=usage.get("prompt_tokens"),
-                           completion_tokens=usage.get("completion_tokens"), model=data.get("model") or model)
+                           completion_tokens=usage.get("completion_tokens"),
+                           model=served if isinstance(served, str) and served else None, attempts=attempts)
 
 
 def _retry_after(r: httpx.Response) -> float | None:

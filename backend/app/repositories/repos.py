@@ -1,4 +1,6 @@
 """Concrete tenant repositories."""
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from app.models import (
     AgentConfig,
     AgentRun,
@@ -19,6 +21,7 @@ from app.models import (
     Payment,
     Product,
     ProductCategory,
+    UsageEvent,
     User,
     WebhookEvent,
     WhatsAppAccount,
@@ -112,3 +115,16 @@ class AuditEventRepo(TenantRepository[AuditEvent]):
 
 class NotificationRepo(TenantRepository[Notification]):
     model = Notification
+
+
+class UsageEventRepo(TenantRepository[UsageEvent]):
+    model = UsageEvent
+
+    def record(self, **fields) -> bool:
+        """Append one usage event; False (and nothing written) when this tenant already has one with the same
+        idempotency_key. Rows are never updated or deleted (a database trigger rejects both)."""
+        fields.pop("business_id", None)  # never trust caller-provided tenant
+        stmt = (pg_insert(UsageEvent).values(business_id=self.business_id, **fields)
+                .on_conflict_do_nothing(index_elements=["business_id", "idempotency_key"])
+                .returning(UsageEvent.id))
+        return self.db.execute(stmt).first() is not None

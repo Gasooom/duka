@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 464 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 506 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -102,6 +102,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_whatsapp_window.py` | The 24-hour window counts only the customer's own messages; a customer silent for 25 h is not messaged (never reaches the adapter), the message is marked `outside_24h_window`, the conversation flagged and the owner alerted once per silence; the 23.5 h margin; late Meta failures (131047 and others) recorded and alerted once; failed owner alerts visible; another shop cannot touch these rows |
 | `test_order_reminders.py` | One owner reminder per order for pending review and for accepted-but-unpaid, never repeated; paid, cancelled and delivered orders get none; no stock, status or customer change; each shop hears only about its own orders; the worker runs the sweep |
 | `test_rate_limit_visibility.py` | The per-customer limit (30 a minute) is unchanged and still unanswered beyond it, but no longer silent: the message is kept and marked, the conversation flagged and the owner alerted once per conversation per day; each shop has its own limit and alerts; normal conversations untouched; a redelivered webhook counts once |
+| `test_usage_metering.py` | Every real AI model call (reply turns and conversation summaries) is one `usage_events` row, committed on its own: it survives the rollback of its turn and the deletion of the conversation, and a retried turn is a new call; served and configured model, tokens, provider retries as attempts, errors; a repeated key or concurrent writers store one row; costs from `USAGE_PRICING_FILE` in exact decimals (served model first, exact before longest prefix, unlisted = unpriced, version kept), a broken price list stops the start; the rules engine, evaluation runs and `llm-check` record nothing; rows can only be inserted (UPDATE and DELETE are refused, and a shop with usage cannot be deleted) |
 
 ---
 
