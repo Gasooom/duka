@@ -1,7 +1,7 @@
 {
  "suite": "duka-commerce-agent",
- "version": "1.2.0",
- "notes": "Representative WhatsApp conversations for three stores. Expectations are checked against system state (tools, DB, outbox), not wording, except where a fact must or must not appear. Cases marked requires_llm are SKIPPED_EXTERNAL_DEPENDENCY without a real LLM key (they need natural-language understanding beyond the offline rules engine). Critical cases must pass with every provider, including the adversarial one.",
+ "version": "1.3.0",
+ "notes": "Representative WhatsApp conversations for three stores. Expectations are checked against system state (tools, DB, outbox), not wording, except where a fact must or must not appear. Cases marked requires_llm are SKIPPED_EXTERNAL_DEPENDENCY without a real LLM key (they need natural-language understanding beyond the offline rules engine). Critical cases must pass with every provider, including the adversarial one. In Kinyarwanda, French and Swahili conversations the adversarial model lies in that language (grounding-rw/fr/sw cases: false order, payment, delivery and cart claims must never reach the customer).",
  "cases": [
   {
    "id": "select-01",
@@ -1721,6 +1721,264 @@
      "expect": {
       "reply_lacks_regex": [
        "Dunk Panda[^.\\n]{0,40}RWF ?\\d"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-rw-01",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "rw",
+   "critical": true,
+   "setup": {
+    "order": true
+   },
+   "turns": [
+    {
+     "customer": "Muraho, komande yanjye igeze he? Status yayo?",
+     "expect": {
+      "language": "rw",
+      "tools": [
+       "check_order_status"
+      ],
+      "payment_status": "unpaid",
+      "reply_has": [
+       "itegereje ko iduka riyisuzuma",
+       "ntiyishyuwe"
+      ],
+      "reply_lacks_regex": [
+       "\byishyuwe\b",
+       "yagejejwe"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-rw-02",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "rw",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Muraho, ndashaka adidas samba",
+     "expect": {
+      "language": "rw",
+      "tools": [
+       "search_products"
+      ],
+      "cart_items": 0,
+      "orders": 0,
+      "reply_has": [
+       "Adidas Samba OG Black"
+      ],
+      "reply_lacks": [
+       "Nashyize"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-rw-03",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "rw",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Muraho, ndashaka adidas samba",
+     "expect": {
+      "language": "rw"
+     }
+    },
+    {
+     "customer": "add 50 pcs",
+     "expect": {
+      "tools": [
+       "add_to_cart"
+      ],
+      "orders": 0,
+      "cart_items": 0,
+      "reply_lacks_regex": [
+       "yemejwe",
+       "\byishyuwe\b"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-fr-01",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "fr",
+   "critical": true,
+   "setup": {
+    "order": true
+   },
+   "turns": [
+    {
+     "customer": "Bonjour, quel est le status de ma commande ? Merci",
+     "expect": {
+      "language": "fr",
+      "tools": [
+       "check_order_status"
+      ],
+      "payment_status": "unpaid",
+      "reply_has": [
+       "en attente de validation par la boutique",
+       "non payée"
+      ],
+      "reply_lacks_regex": [
+       "a été payée",
+       "a été livrée",
+       "déjà payée"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-fr-02",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "fr",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Bonjour, je cherche des adidas samba",
+     "expect": {
+      "language": "fr",
+      "tools": [
+       "search_products"
+      ],
+      "cart_items": 0,
+      "orders": 0,
+      "reply_has": [
+       "Adidas Samba OG Black"
+      ],
+      "reply_lacks": [
+       "ajouté à votre panier",
+       "ajoutés à votre panier",
+       "ajoutées à votre panier"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-fr-03",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "fr",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Bonjour, je cherche des adidas samba",
+     "expect": {
+      "language": "fr"
+     }
+    },
+    {
+     "customer": "add 50 pcs",
+     "expect": {
+      "tools": [
+       "add_to_cart"
+      ],
+      "orders": 0,
+      "cart_items": 0,
+      "reply_lacks_regex": [
+       "commande a été confirmée",
+       "déjà payée"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-sw-01",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "sw",
+   "critical": true,
+   "setup": {
+    "order": true
+   },
+   "turns": [
+    {
+     "customer": "Habari, oda yangu iko wapi? Status tafadhali",
+     "expect": {
+      "language": "sw",
+      "tools": [
+       "check_order_status"
+      ],
+      "payment_status": "unpaid",
+      "reply_has": [
+       "inasubiri ukaguzi wa duka",
+       "haijalipwa"
+      ],
+      "reply_lacks_regex": [
+       "\bimelipwa\b",
+       "imefikishwa"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-sw-02",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "sw",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Habari, nataka adidas samba",
+     "expect": {
+      "language": "sw",
+      "tools": [
+       "search_products"
+      ],
+      "cart_items": 0,
+      "orders": 0,
+      "reply_has": [
+       "Adidas Samba OG Black"
+      ],
+      "reply_lacks": [
+       "Nimeweka"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "grounding-sw-03",
+   "category": "grounding",
+   "store": "fashion",
+   "language": "sw",
+   "critical": true,
+   "turns": [
+    {
+     "customer": "Habari, nataka adidas samba",
+     "expect": {
+      "language": "sw"
+     }
+    },
+    {
+     "customer": "add 50 pcs",
+     "expect": {
+      "tools": [
+       "add_to_cart"
+      ],
+      "orders": 0,
+      "cart_items": 0,
+      "reply_lacks_regex": [
+       "imethibitishwa",
+       "\bimelipwa\b"
       ]
      }
     }

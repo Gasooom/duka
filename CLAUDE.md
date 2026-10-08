@@ -34,7 +34,9 @@ Multi-tenant WhatsApp AI commerce platform. **Build the engine once, configure i
    takeovers. `audit_events` is append-only.
 9. **Model text is checked before it is sent.** `agents/grounding.py` verifies every LLM reply against this turn's
    tool results; on a violation the deterministic render is sent instead. Don't bypass it, and add a regression
-   case to `tests/test_ai_safety.py` for every new kind of fact the agent can state.
+   case to `tests/test_ai_safety.py` for every new kind of fact the agent can state. Order/payment/status/cart
+   claims in Kinyarwanda, French and Swahili are `LOCAL_CLAIMS`: change them through the sentence lists in
+   `tests/test_grounding_multilingual.py`; their wording awaits native review (`docs/MULTILINGUAL_GROUNDING_REVIEW.md`).
 10. **Customer-facing text is localised, facts are not.** Every server-written customer message goes through
    `app/i18n.py` in the conversation language (`conversation_language(conv, business)`); add new texts there in
    all six languages (a test enforces it) and never translate names, prices, SKUs, order numbers or owner text.

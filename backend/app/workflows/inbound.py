@@ -27,7 +27,7 @@ from app.db.session import SessionLocal
 from app.i18n import media_label, t
 from app.integrations.whatsapp.parser import InboundMessage, StatusUpdate, parse_webhook
 from app.models import Business, Message, Notification, Product, ProductCategory, WebhookEvent, WhatsAppAccount
-from app.repositories.repos import SettingsRepo
+from app.repositories.repos import NotificationRepo, SettingsRepo
 from app.services.commerce_service import CheckoutService
 from app.services.conversation_service import ConversationService, CustomerService, normalize_phone
 from app.services.messaging_service import (
@@ -53,6 +53,8 @@ def language_ignore_terms(db: Session, business: Business, customer) -> set[str]
     terms = {n.lower() for n in names if n}
     return terms | {w for n in terms for w in n.split() if len(w) >= 4}
 RETRY_DELAYS_SECONDS = (2, 10, 30, 120)
+RATE_LIMIT_ALERT = "customer_rate_limited"  # owner alert kind (notifications.kind)
+RATE_LIMIT_ALERT_EVERY = timedelta(hours=24)  # per conversation, however long a burst or a bot loop lasts
 # Meta status webhooks can arrive out of order; never move a message backwards (read -> delivered).
 _STATUS_RANK = {"queued": 0, "sending": 1, "retry": 1, "sent": 2, "simulated": 2, "delivered": 3, "read": 4}
 
@@ -309,6 +311,7 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         return ProcessResult(status="ai_paused", business_id=business.id, conversation_id=conv.id)
 
     if not inbound_message_limiter.allow(f"{business.id}:{customer.whatsapp_number}"):
+        _rate_limited(db, business.id, customer, conv, inbound)
         return ProcessResult(status="rate_limited", business_id=business.id, conversation_id=conv.id)
 
     if not text_:
@@ -330,6 +333,27 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         CheckoutService(db, business.id).attach_summary_message(outcome.checkout_cart_id, sent.id)
     return ProcessResult(status="replied", business_id=business.id, conversation_id=conv.id, reply=outcome.text,
                          agent_run_id=outcome.run.id)
+
+
+def _rate_limited(db: Session, business_id: uuid.UUID, customer, conv, inbound: Message) -> None:
+    """Over the per-customer message limit: the message is kept but gets no automatic answer (a reply could feed a
+    bot loop). It is marked as such, the conversation goes on the owner's attention list, and the owner is alerted
+    at most once per conversation per RATE_LIMIT_ALERT_EVERY. The caller holds the conversation row lock, so
+    concurrent messages from this customer cannot both alert."""
+    inbound.attributes = {**(inbound.attributes or {}), "rate_limited": True}
+    conv.needs_attention = True
+    log_event(logger, "inbound.rate_limited", 30, operation="inbound", status="rate_limited")
+    recent = NotificationRepo(db, business_id).first(
+        Notification.kind == RATE_LIMIT_ALERT, Notification.entity_type == "conversation",
+        Notification.entity_id == conv.id,
+        Notification.created_at > datetime.now(timezone.utc) - RATE_LIMIT_ALERT_EVERY)
+    if recent is None:
+        notify_owner(db, business_id, RATE_LIMIT_ALERT,
+                     f"⚠️ {customer.name or 'Customer'} (+{customer.whatsapp_number}) sent more than "
+                     f"{inbound_message_limiter.limit} WhatsApp messages in a minute. The extra messages are saved in "
+                     "the conversation but were not answered automatically. Open it in the Duka dashboard; if it is "
+                     "spam or an automated loop, use Take over so the assistant stops replying.",
+                     entity_type="conversation", entity_id=conv.id)
 
 
 def process_webhook_payload(payload: dict, session_factory=SessionLocal) -> list[ProcessResult]:

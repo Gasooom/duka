@@ -15,7 +15,9 @@ Commerce facts must come from structured tool results or server state, never fro
        - a partial search result must not be described with a word it does not match (search returned the
          Kitenge dress for "red dress" with missing=["red"]: "the Kitenge dress is red" is rejected);
        - any other number (including specs written with a unit: 128GB, 250g) must appear in tool data, server
-         context or the customer's own message.
+         context or the customer's own message;
+       - the order/payment/status/cart claims are checked in Kinyarwanda, French and Swahili as well (LOCAL_CLAIMS;
+         wording pending native-speaker review, docs/MULTILINGUAL_GROUNDING_REVIEW.md).
      The model may also never imitate the server's order summary or ask for the YES that places an order.
   3. On any violation the engine sends the deterministic render of the same tool results instead of the
      model's text (agents/render.py), or a safe clarifying message if there are none.
@@ -93,6 +95,188 @@ UNIT_AFTER_RE = re.compile(r"\s?(?:k?gs?|grams?|gb|tb|mb|mah|ml|l|litres?|liters
                            r"hz|mp|gbps|mbps|%)(?![a-z])", re.I)
 ID_STRING_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 ID_KEYS = {"id", "sku", "cart_id", "product_id", "payment_id", "conversation_id", "customer_id", "order_id"}
+
+
+# ---------------------------------------------------------------- Kinyarwanda, French and Swahili claims
+# The English and Arabic patterns above are unchanged. The same four kinds of claim (order placed, paid, order
+# status, cart change) written in rw/fr/sw are matched on completed-state verb forms ("a été livrée", "yagejejwe",
+# "imefikishwa"), not on word-for-word translations of the English patterns: offers ("voulez-vous que je l'ajoute ?",
+# "niweke kwenye kikapu?"), infinitives and future forms ("sera livrée", "izagezwa", "itafikishwa") do not match, and
+# rw/sw negatives are other words ("ntiyishyuwe", "haijalipwa"). A match is still not a claim when its own clause
+# negates, conditions or defers it ("n'a pas été payée", "une fois la commande confirmée", "niba yishyuwe", "kama
+# umelipa"), when the sentence opens with a question word ("Ese", "Je,", "Est-ce que"), or when a French plain present
+# states a policy ("votre commande est livrée sous 24 h"). Verbs that also fit other nouns need the order noun ("oda …
+# imethibitishwa", never "bei imethibitishwa"); in Swahili the verb must agree with that noun's class. The wording is
+# the server's own (app/i18n.py) plus common variants. No native speaker has reviewed it yet:
+# docs/MULTILINGUAL_GROUNDING_REVIEW.md lists every phrase to check before the pilot.
+def _fr_pp(*stems: str) -> str:
+    """French past participle, any gender and number, accent optional: confirmé, confirmées, confirmee."""
+    return rf"(?:{'|'.join(stems)})(?:ée?s?|ees?)\b"
+
+
+_FR_HAS_BEEN = r"\b(?:a|ont|ai|avons|avez)\s+(?:bien\s+|d[ée]j[àa]\s+|maintenant\s+|enfin\s+)?[ée]t[ée]\s+"
+_FR_JUST = r"\bvient\s+d['’][êe]tre\s+"
+_FR_NOW = r"\b(?:est|sont)\s+(?:bien|d[ée]j[àa]|maintenant|d[ée]sormais|enfin)\s+"
+# A bare "est livrée" also states a policy ("chaque commande est livrée sous 24 h"); with a specific subject (votre,
+# elle, an order number) it is about this order.
+_FR_THIS_IS = r"\b(?:votre|vos|ta|ton|tes|cette|elle|elles|ORDERNO)\b[^.\n]{0,40}?\b(?:est|sont)\s+"
+_FR_STATE = rf"(?:{_FR_HAS_BEEN}|{_FR_JUST}|{_FR_NOW}|{_FR_THIS_IS})"
+_FR_DONE = rf"(?:{_FR_HAS_BEEN}|{_FR_JUST}|{_FR_NOW})"
+_FR_THIS_ORDER = r"\b(?:votre|vos|ta|ton|tes|cette|elle|elles|ORDERNO|commande)\b[^.\n]{0,40}?\b(?:est|sont)\s+"
+_FR_PLACED = _fr_pp("confirm", "enregistr", "valid", "pass")
+_FR_RECEIVED = rf"(?:re[çc]ue?s?\b|{_fr_pp('confirm', 'valid', 'effectu', 'enregistr')})"
+_FR_TO_CART = r"(?:(?:[àa]|dans)\s+(?:votre|ton|le)\s+panier|au\s+panier)"
+_FR_FROM_CART = r"(?:de\s+(?:votre|ton)\s+panier|du\s+panier)"
+_RW_ORDER = r"(?:komande|order|oda|ibyo\s+(?:wa|mwa)tumije)"
+_RW_BASKET = r"(?:gitebo|agaseke|cart|panier)"
+_SW_ORDER = r"(?:oda|order|agizo|maagizo|mzigo|kifurushi|vifurushi)"
+_SW_DONE = r"(?:i|zi|li|ya|u|ki|vi)(?:me|mesha|sha|li)"  # perfect / already / past tense, any noun class
+_SW_DONE_9 = r"(?:i|zi)(?:me|mesha|sha|li)"               # class 9/10, like oda and bidhaa
+_SW_BASKET = r"(?:kikapu|cart|toroli|mkokoteni)"
+# The verb agrees with ITS noun: "oda … imethibitishwa" (class 9) is about the order, "malipo ya oda … yamepokelewa"
+# (class 6, malipo) about the payment.
+_SW_ORDER_AGREE = (r"(?:(?:oda|order)\b[^.\n]{0,40}?\b(?:i|zi)|agizo\b[^.\n]{0,40}?\bli|maagizo\b[^.\n]{0,40}?\bya|"
+                   r"mzigo\b[^.\n]{0,40}?\bu|kifurushi\b[^.\n]{0,40}?\bki|vifurushi\b[^.\n]{0,40}?\bvi)")
+_SW_ORDER_DONE = rf"\b{_SW_ORDER_AGREE}(?:me|mesha|sha|li)"  # "oda yako imelipwa", "mzigo umefika"
+_SW_ORDER_IS = rf"\b{_SW_ORDER_AGREE}ko"                      # "oda yako iko", "mzigo uko"
+
+# (language, violation kind, claimed order status, pattern)
+LOCAL_CLAIMS: tuple[tuple[str, str, str | None, re.Pattern], ...] = tuple(
+    (lang, kind, status, re.compile(rx, re.I)) for lang, kind, status, rx in (
+        # -------------------------------------------- an order was placed / confirmed
+        ("fr", "order_placed", None,
+         rf"\bcommande\s+(?:ORDERNO\s+)?{_FR_PLACED}"
+         rf"|\bcommande\b[^.\n]{{0,40}}?{_FR_DONE}{_FR_PLACED}"
+         rf"|\b(?:votre|ta|cette)\s+commande\b[^.\n]{{0,40}}?\b(?:est|sont)\s+{_FR_PLACED}"
+         rf"|\bcommande\s+ORDERNO\s+(?:est|sont)\s+{_FR_PLACED}"
+         rf"|\bcommande\b[^.\n]{{0,40}}?\bprise\s+en\s+compte\b"
+         rf"|\b(?:j['’]ai|nous\s+avons|on\s+a|vous\s+avez)\s+(?:bien\s+|d[ée]j[àa]\s+)?"
+         rf"(?:(?:pass|enregistr|confirm|valid)[ée]|re[çc]u)\s+(?:votre|vos|la|une|cette|ta)\s+commandes?\b"),
+        ("rw", "order_placed", None,
+         rf"\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:y|z|by)(?:emejwe|amaze\s+kwemezwa|atanzwe|akiriwe|anditswe)\b"
+         rf"|\b(?:natanze|twatanze|watanze|mwatanze|nemeje|twemeje|nakiriye|twakiriye|nanditse|twanditse)\s+{_RW_ORDER}\b"),
+        ("sw", "order_placed", None,
+         rf"{_SW_ORDER_DONE}(?:thibitishwa|wekwa|pokelewa|sajiliwa|undwa)\b"
+         rf"|\b(?:nimeweka|tumeweka|umeweka|mmeweka|nimethibitisha|tumethibitisha|nimepokea|tumepokea|nimesajili|"
+         rf"tumesajili)\s+{_SW_ORDER}\b"),
+        # -------------------------------------------- payment received / order paid
+        ("fr", "payment_status", None,
+         rf"\bpaiement\s+(?:re[çc]ue?|{_fr_pp('confirm', 'valid', 'effectu', 'enregistr')}|r[ée]ussi\b)"
+         rf"|\bpaiements?\b[^.\n]{{0,30}}?{_FR_DONE}{_FR_RECEIVED}"
+         rf"|\b(?:votre|vos|ton|ce)\s+paiements?\b[^.\n]{{0,30}}?\b(?:est|sont)\s+{_FR_RECEIVED}"
+         rf"|{_FR_STATE}{_fr_pp('pay', 'r[ée]gl')}"
+         rf"|\b(?:j['’]ai|nous\s+avons|on\s+a)\s+(?:bien\s+)?re[çc]u\s+(?:votre|ton|le)\s+"
+         rf"(?:paiement|r[èe]glement|virement|transfert|argent)\b"
+         rf"|\bvous\s+avez\s+(?:bien\s+|d[ée]j[àa]\s+)?(?:pay|r[ée]gl)[ée]\b"),
+        ("rw", "payment_status", None,
+         r"\bubwishyu\b[^.\n]{0,40}?\bbw(?:akiriwe|emejwe|ageze|abonetse|arangiye|agenze\s+neza|amaze\s+kwemezwa)\b"
+         r"|\b(?:y|z|by|cy)(?:ishyuwe|arishyuwe|amaze\s+kwishyurwa)\b"
+         r"|\b(?:nakiriye|twakiriye|nabonye|twabonye|nemeje|twemeje)\s+(?:ubwishyu|amafaranga)\b"
+         r"|\bamafaranga\b[^.\n]{0,30}?\by(?:ageze|akiriwe|abonetse|injiye)\b"
+         r"|\b(?:wamaze\s+kwishyura|mwamaze\s+kwishyura|warishyuye|mwarishyuye)\b"),
+        ("sw", "payment_status", None,
+         rf"\bmalipo\b[^.\n]{{0,40}}?\bya(?:me|mesha|sha|li)(?:pokelewa|thibitishwa|kamilika|fanikiwa|ingia|fika)\b"
+         rf"|\b{_SW_DONE}lipwa\b"
+         rf"|\b(?:nimepokea|tumepokea|nimeona|tumeona|nimethibitisha|tumethibitisha)\s+(?:malipo|pesa|fedha|hela)\b"
+         rf"|\b(?:umelipa|umeshalipa|mmelipa|mmeshalipa|umelipia|umeshalipia)\b"),
+        # -------------------------------------------- order statuses
+        ("fr", "order_status", "delivered",
+         rf"{_FR_STATE}{_fr_pp('livr')}|\blivraison\b[^.\n]{{0,20}}?{_FR_DONE}{_fr_pp('effectu', 'termin')}"
+         rf"|\blivraison\s+{_fr_pp('effectu', 'termin')}|\bnous\s+avons\s+livr[ée]\b"),
+        ("fr", "order_status", "out_for_delivery",
+         rf"{_FR_THIS_ORDER}(?:d[ée]j[àa]\s+|maintenant\s+|actuellement\s+|bien\s+)?"
+         rf"(?:en\s+route|en\s+chemin|en\s+cours\s+de\s+livraison)\b"
+         rf"|{_FR_STATE}{_fr_pp('exp[ée]di')}|\bcommande\b[^.\n]{{0,40}}?{_FR_DONE}{_fr_pp('exp[ée]di')}"
+         rf"|\bcommande\s+(?:ORDERNO\s+)?{_fr_pp('exp[ée]di')}"
+         rf"|\b(?:nous\s+avons|j['’]ai)\s+exp[ée]di[ée]\b|\bremise?s?\s+au\s+livreur\b"),
+        ("fr", "order_status", "accepted",
+         rf"\bcommande\b[^.\n]{{0,40}}?{_FR_DONE}{_fr_pp('accept')}"
+         rf"|\b(?:votre|ta|cette)\s+commande\b[^.\n]{{0,40}}?\b(?:est|sont)\s+{_fr_pp('accept')}"
+         rf"|\bcommande\s+(?:ORDERNO\s+)?(?:est\s+)?{_fr_pp('accept')}"
+         rf"|\ba\s+(?:bien\s+)?accept[ée]\s+(?:votre|ta|la)\s+commande\b"),
+        ("fr", "order_status", "cancelled",
+         rf"{_FR_STATE}{_fr_pp('annul')}|\bcommande\s+(?:ORDERNO\s+)?{_fr_pp('annul')}"
+         rf"|\b(?:nous\s+avons|j['’]ai)\s+annul[ée]\s+(?:votre|ta|la)\s+commande\b"),
+        ("fr", "order_status", "ready",
+         rf"{_FR_THIS_ORDER}(?:d[ée]j[àa]\s+|maintenant\s+|bien\s+|enfin\s+)?pr[êe]te?s?\b"),
+        ("rw", "order_status", "delivered",
+         rf"\b(?:y|z|by)(?:agejejwe|amaze\s+kugezwa|ashyikirijwe)\b"
+         rf"|\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:y|z|by)(?:ageze|agezeyo|akugezeho|abagezeho)\b"),
+        ("rw", "order_status", "out_for_delivery",
+         rf"\b(?:iri|ziri|biri)\s+mu\s+(?:nzira|rugendo)\b"
+         rf"|\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:y|z|by)(?:oherejwe|ahagurutse)\b"),
+        ("rw", "order_status", "accepted",
+         rf"\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:y|z|by)emewe\b"
+         rf"|\b(?:yemeye|ryemeye|bemeye|twemeye|nemeye)\s+{_RW_ORDER}\b"),
+        ("rw", "order_status", "cancelled",
+         rf"\b(?:y|z|by)ahagaritswe\b|\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:y|z|by)(?:asheshwe|akuweho)\b"
+         rf"|\b(?:twahagaritse|nahagaritse|bahagaritse|ryahagaritse|twasheshe|nasheshe)\s+{_RW_ORDER}\b"),
+        ("rw", "order_status", "ready",
+         rf"\b{_RW_ORDER}\b[^.\n]{{0,40}}?\b(?:(?:i|zi|bi)teguye|(?:y|z|by)ateguwe|(?:y|z|by)amaze\s+gutegurwa)\b"),
+        ("sw", "order_status", "delivered",
+         rf"\b{_SW_DONE_9}(?:fikishwa|kabidhiwa)\b"
+         rf"|{_SW_ORDER_DONE}(?:fika|wasilishwa|letwa)\b"
+         rf"|\b(?:tumefikisha|nimefikisha|tumewasilisha|nimewasilisha|tumekabidhi|nimekabidhi|tumeleta|nimeleta|"
+         rf"umepokea|mmepokea)\s+{_SW_ORDER}\b"),
+        ("sw", "order_status", "out_for_delivery",
+         rf"\b(?:iko|ziko|liko|kiko|viko)\s+njiani\b|\b{_SW_DONE_9}safirishwa\b"
+         rf"|{_SW_ORDER_DONE}(?:safirishwa|tumwa|ondoka)\b"),
+        ("sw", "order_status", "accepted",
+         rf"{_SW_ORDER_DONE}kubaliwa\b"
+         rf"|\b(?:wamekubali|tumekubali|amekubali|nimekubali|limekubali|imekubali)\s+{_SW_ORDER}\b"),
+        ("sw", "order_status", "cancelled",
+         rf"\b{_SW_DONE}(?:ghairiwa|batilishwa)\b|{_SW_ORDER_DONE}(?:futwa|sitishwa)\b"
+         rf"|\b(?:tumeghairi|nimeghairi|wameghairi|ameghairi|tumefuta|nimefuta|tumesitisha|tumebatilisha)\s+{_SW_ORDER}\b"),
+        ("sw", "order_status", "ready",
+         rf"{_SW_ORDER_IS}\s+tayari\b|{_SW_ORDER_DONE}(?:andaliwa|tayarishwa)\b"),
+        # -------------------------------------------- a cart change
+        ("fr", "cart", None,
+         rf"\b(?:j['’]ai\s+|nous\s+avons\s+|on\s+a\s+|je\s+viens\s+d['’])(?:bien\s+)?"
+         rf"(?:ajout|plac|mis|retir|supprim|enlev)(?:é|e|er)?\b[^.\n]{{0,60}}?(?:{_FR_TO_CART}|{_FR_FROM_CART})"
+         rf"|\bj['’](?:ajoute|enl[èe]ve|retire)\b[^.\n]{{0,60}}?(?:{_FR_TO_CART}|{_FR_FROM_CART})"
+         rf"|{_fr_pp('ajout', 'plac')}\s+{_FR_TO_CART}|\bmise?s?\s+{_FR_TO_CART}"
+         rf"|{_fr_pp('retir', 'supprim', 'enlev')}\s+{_FR_FROM_CART}"
+         rf"|\b(?:est|sont)\s+(?:bien\s+|d[ée]j[àa]\s+|maintenant\s+)?dans\s+(?:votre|ton)\s+panier\b"),
+        ("rw", "cart", None,
+         rf"\b(?:nashyize|twashyize|nongeyeho|twongeyeho|nongereye|twongereye|nakuyemo|twakuyemo|nakuye|twakuye|"
+         rf"nakuyeho|twakuyeho)\b[^.\n]{{0,60}}?\b(?:mu|muri|ku)\s+{_RW_BASKET}\b"
+         rf"|\b(?:kiri|biri|iri|ziri|(?:cy|by|y|z)a(?:shyizwe|kuwe|vanywe)|(?:cy|by|y|z)ongewe)\s+(?:mu|muri)\s+"
+         rf"{_RW_BASKET}\b"),
+        ("sw", "cart", None,
+         rf"\b(?:nimeweka|tumeweka|nimeongeza|tumeongeza|nimeondoa|tumeondoa|nimetoa|tumetoa)\b[^.\n]{{0,60}}?"
+         rf"\b(?:kwenye|katika|ndani\s+ya|kutoka)\s+(?:kwenye\s+)?{_SW_BASKET}\b"
+         rf"|\b(?:kiko|viko|iko|ziko|liko)\s+(?:kwenye|katika|ndani\s+ya)\s+{_SW_BASKET}\b"
+         rf"|\b{_SW_DONE}(?:wekwa|ongezwa|ondolewa|tolewa)\s+(?:kwenye|katika|ndani\s+ya|kutoka)\s+(?:kwenye\s+)?"
+         rf"{_SW_BASKET}\b"),
+    ))
+# Words that make the claim's own clause a negation, condition, deferral, question or generality. Only words that
+# negate or condition the claim itself count: an article ("des articles"), a quantifier ("toute votre commande"), an
+# adjective ("votre commande impayée"), an ordinal ("komande ya nyuma") or a relative clause ("ibyo ushaka") inside
+# the claim never exempts it.
+NOT_A_CLAIM = {
+    "fr": re.compile(
+        r"\bn['’]|\bne\b|\bpas\b|\bjamais\b|\baucune?\b|\bsi\b|\bs['’]il|\bune\s+fois\b|"
+        r"\bdès\b|\bdes\s+qu(?:e\b|['’])|\blorsqu|\bquand\b|\bapr[èe]s\b|\bavant\b|\bjusqu|\battente\b|\battend|"
+        r"\bser(?:a|ai|as|ons|ez|ont|ait|aient)\b|\bva\b|\bvont\b|\bvais\b|\bdevr|\bdoi[tv]|\bpourr|\bpeu[tx]\b|"
+        r"\bpouvez\b|\bvoulez\b|\bsouhait|\bveuillez\b|\best-ce\b|\b(?:chaque|toute)\s+commande\b|"
+        r"\btoutes\s+les\s+commandes\b|"
+        r"\bg[ée]n[ée]ralement\b|\bhabituellement\b|\bnormalement\b|\bd['’]habitude\b|\ben\s+g[ée]n[ée]ral\b", re.I),
+    "rw": re.compile(
+        r"\b(?:ntabwo|nta|ntago|oya|sibyo|niba|numara|nimara|nibamara|nibimara|nitumara|namara|mumara|nimumara|"
+        r"kugira|kugirango|nibiba|nuramuka|nimuramuka|ese)\b|\b(?:nyuma|mbere)\s+y(?:o\b|['’])|"
+        r"\b\w{0,3}zaba\b", re.I),
+    "sw": re.compile(
+        r"\b(?:hapana|hakuna|si|sio|siyo|wala|kama|ikiwa|endapo|iwapo|baada|kabla|pindi|je|niweke|niongeze)\b|"
+        r"\w*takapo\w*|\w*takavyo\w*", re.I),
+}
+QUESTION_START = {"fr": re.compile(r"^\W*est-ce\s+qu", re.I), "rw": re.compile(r"^\W*ese\b", re.I),
+                  "sw": re.compile(r"^\W*je\b", re.I)}
+CLAUSE_BREAK = re.compile(r"[,;:()]|\s[-–—]\s|\b(?:mais|cependant|pourtant|ariko|naho|lakini|ila|ingawa|but)\b", re.I)
+# A French plain present followed by how or when it happens is a policy, not this order's state.
+FR_POLICY_TAIL = re.compile(
+    r"\s+(?:gratuitement|sous\s+\d|en\s+\d|dans\s+(?:les|un\s+d[ée]lai|\d)|[àa]\s+(?:la\s+(?:livraison|r[ée]ception)|"
+    r"domicile)|partout|chaque|tous\s+les|le\s+jour\s+m[êe]me|du\s+lundi)", re.I)
+_FR_NOT_PLAIN = re.compile(r"[ée]t[ée]|[êe]tre|d[ée]j[àa]|\bbien\b|maintenant|d[ée]sormais|enfin", re.I)
 
 
 @dataclass
@@ -288,6 +472,26 @@ def _is_money(sentence: str, start: int, end: int, value: Decimal) -> bool:
     return bool(MONEY_WORDS.search(sentence)) and value >= 100
 
 
+def local_claims(sentence: str) -> list[tuple[str, str | None, str]]:
+    """(kind, claimed status, language) of every Kinyarwanda, French or Swahili claim the sentence makes."""
+    marked = ORDER_NO_RE.sub(" ORDERNO ", sentence)
+    found: list[tuple[str, str | None, str]] = []
+    for lang, kind, status, rx in LOCAL_CLAIMS:
+        if QUESTION_START[lang].search(marked):
+            continue
+        for m in rx.finditer(marked):
+            start = 0
+            for brk in CLAUSE_BREAK.finditer(marked, 0, m.end()):
+                start = brk.end()
+            if NOT_A_CLAIM[lang].search(marked[start:m.end()]):
+                continue
+            if lang == "fr" and not _FR_NOT_PLAIN.search(m.group(0)) and FR_POLICY_TAIL.match(marked, m.end()):
+                continue
+            found.append((kind, status, lang))
+            break
+    return found
+
+
 def verify(reply: str, led: Ledger) -> list[Violation]:
     violations: list[Violation] = []
     reply = western_digits(reply)
@@ -366,4 +570,13 @@ def verify(reply: str, led: Ledger) -> list[Violation]:
                         violations.append(Violation("attribute", f"{p.name} does not match '{word}'"))
         if CART_CLAIM_RE.search(clean) and not led.has_cart_facts:
             violations.append(Violation("cart", "claims a cart change that no cart tool performed"))
+        for kind, status, lang in local_claims(sentence):
+            if kind == "order_placed" and not led.has_order_facts:
+                violations.append(Violation(kind, f"claims an order was placed/confirmed ({lang})"))
+            elif kind == "payment_status" and "paid" not in led.payment_statuses:
+                violations.append(Violation(kind, f"claims payment without a 'paid' status from the tools ({lang})"))
+            elif kind == "order_status" and status not in led.order_statuses:
+                violations.append(Violation(kind, f"claims '{status}' without that status from the tools ({lang})"))
+            elif kind == "cart" and not led.has_cart_facts:
+                violations.append(Violation(kind, f"claims a cart change that no cart tool performed ({lang})"))
     return violations

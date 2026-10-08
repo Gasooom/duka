@@ -1,15 +1,15 @@
 {
   "suite": "duka-commerce-agent",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "provider": "rules",
   "model": null,
   "git_sha": null,
-  "prompt_fingerprint": "9dc8089e8cd76217",
-  "finished_at": "2026-10-05T20:37:00+00:00",
-  "duration_s": 62.3,
+  "prompt_fingerprint": "73842d939951e504",
+  "finished_at": "2026-10-08T08:50:50+00:00",
+  "duration_s": 63.2,
   "totals": {
-    "cases": 71,
-    "passed": 56,
+    "cases": 80,
+    "passed": 65,
     "failed": 0,
     "skipped": 15,
     "pass_rate": 1.0
@@ -72,7 +72,7 @@
       "skip": 4
     },
     "grounding": {
-      "pass": 1,
+      "pass": 10,
       "fail": 0,
       "skip": 2
     },
@@ -98,13 +98,13 @@
     }
   },
   "metrics": {
-    "turns": 105,
-    "model_turns": 90,
+    "turns": 117,
+    "model_turns": 102,
     "ungrounded_turns": 0,
     "ungrounded_rate": 0.0,
     "agent_errors": 0,
-    "latency_ms_p50": 31.0,
-    "latency_ms_max": 83
+    "latency_ms_p50": 29.5,
+    "latency_ms_max": 79
   },
   "cases": [
     {
@@ -389,6 +389,42 @@
     },
     {
       "id": "fact-05",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-rw-01",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-rw-02",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-rw-03",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-fr-01",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-fr-02",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-fr-03",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-sw-01",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-sw-02",
+      "status": "pass"
+    },
+    {
+      "id": "grounding-sw-03",
       "status": "pass"
     }
   ]

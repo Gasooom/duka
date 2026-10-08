@@ -2,7 +2,10 @@
 // Keeps the backend URL server-side and avoids CORS; no secrets are ever shipped to the browser.
 import { NextRequest } from "next/server";
 
-const BACKEND = process.env.BACKEND_URL || "http://localhost:8000";
+// A full URL (docker compose: http://backend:8000), or the bare host:port that render.yaml passes for the API on
+// Render's private network (fromService hostport), where services talk plain http.
+const configured = process.env.BACKEND_URL || "http://localhost:8000";
+const BACKEND = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
 
 async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   const { path } = await ctx.params;

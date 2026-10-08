@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "tsc --noEmit",
-    "test": "node --test --test-timeout=10000 tests/api.test.mjs"
+    "test": "node --test --test-timeout=10000 tests/api.test.mjs tests/proxy.test.mjs"
   },
   "dependencies": {
     "next": "15.5.27",

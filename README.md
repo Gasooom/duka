@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 433 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 464 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -89,7 +89,8 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_human_control.py` | Business hours parsing in the shop's timezone, after-hours expectations for handoffs/voice notes/orders, `open_now` as a tool fact, business-wide AI pause |
 | `test_dashboard_ops.py` | Setup checklist, password change signs out other devices, operator password reset, dev tools hidden in production |
 | `test_reliability.py` | `/healthz`, `/readyz` ok/degraded/down, `/metrics`, ops token, log scrubbing (secrets, SQL parameters, phone numbers, query strings), retention, dead-letter requeue |
-| `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, v1.2.0: 71 conversations, three stores) must not regress against its baselines, with the offline engine and with a model that lies in every reply |
+| `test_evals.py` | The versioned agent evaluation suite (`backend/evals`, v1.3.0: 80 conversations, three stores) must not regress against its baselines, with the offline engine and with a model that lies in every reply (in Kinyarwanda, French and Swahili conversations, in that language) |
+| `test_grounding_multilingual.py` | False order, payment, delivery/status and cart claims in Kinyarwanda, French and Swahili are rejected, and pass once the tools returned the fact; negations, conditions, future forms, offers, questions, policies and the server's own texts are not claims; English and Arabic results unchanged; through the pipeline the customer gets the real facts in their language (wording pending native review: `docs/MULTILINGUAL_GROUNDING_REVIEW.md`) |
 | `test_language.py` | Language detection (incl. Sudanese vs standard Arabic), persistence, confident switches only, code-switching, every server message in the conversation language, facts identical across languages, Arabic digits in the grounding check |
 | `test_hardening.py` | Production locks dev tools and unsigned webhooks, one bad message doesn't block a batch, per-customer rate limit, env comments can't become secrets, expired and unsigned (`alg: none`) tokens refused, the demo seed refuses production before touching the database |
 | `test_http_security.py` | Security headers on every response (errors, preflights and health checks too), HSTS only in production, the 10 MB body limit with and without a Content-Length (webhooks and uploads: 413, nothing stored), a signed webhook streamed without a length still verifies, per-route limits still apply |
@@ -100,10 +101,12 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_db_limits.py` | Statement, lock and idle-transaction timeouts on every connection and checked against the AI turn budget; a lock timeout becomes a retry (no lost message); an idle transaction is ended and the pool recovers; a graceful shutdown hands unfinished events back at once |
 | `test_whatsapp_window.py` | The 24-hour window counts only the customer's own messages; a customer silent for 25 h is not messaged (never reaches the adapter), the message is marked `outside_24h_window`, the conversation flagged and the owner alerted once per silence; the 23.5 h margin; late Meta failures (131047 and others) recorded and alerted once; failed owner alerts visible; another shop cannot touch these rows |
 | `test_order_reminders.py` | One owner reminder per order for pending review and for accepted-but-unpaid, never repeated; paid, cancelled and delivered orders get none; no stock, status or customer change; each shop hears only about its own orders; the worker runs the sweep |
+| `test_rate_limit_visibility.py` | The per-customer limit (30 a minute) is unchanged and still unanswered beyond it, but no longer silent: the message is kept and marked, the conversation flagged and the owner alerted once per conversation per day; each shop has its own limit and alerts; normal conversations untouched; a redelivered webhook counts once |
 
 ---
 
-Dashboard unit tests (the API client: a double click never sends a write twice) and type check:
+Dashboard unit tests (the API client: a double click never sends a write twice; the `/api` proxy reaches the API at
+every `BACKEND_URL` form, including Render's private `host:port`) and type check:
 ```bash
 cd frontend && npm test && npm run lint
 ```
