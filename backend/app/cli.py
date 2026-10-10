@@ -114,6 +114,29 @@ def llm_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def inventory_check(args: argparse.Namespace) -> int:
+    """Read-only: every product whose stock differs from the sum of its inventory movements. Every stock change writes
+    a movement in the same transaction, so a difference means a change bypassed the ledger. Exit 1 when any differs."""
+    from sqlalchemy import func, select
+
+    from app.db.session import SessionLocal
+    from app.models import Business, InventoryMovement, Product
+    ledger = (select(InventoryMovement.product_id, func.sum(InventoryMovement.change).label("total"))
+              .group_by(InventoryMovement.product_id).subquery())
+    total = func.coalesce(ledger.c.total, 0)
+    with SessionLocal() as db:
+        rows = db.execute(select(Business.name, Product.id, Product.sku, Product.name, Product.stock_quantity, total)
+                          .join(Business, Business.id == Product.business_id)
+                          .outerjoin(ledger, ledger.c.product_id == Product.id)
+                          .where(Product.stock_quantity != total).order_by(Business.name, Product.name)).all()
+        db.rollback()
+    for shop, product_id, sku, name, stock, movements in rows:
+        print(f"{shop}: {name} ({sku or product_id}) stock {stock}, inventory movements add up to {movements}")
+    print(f"{len(rows)} product(s) whose stock differs from the inventory ledger" if rows
+          else "every product's stock matches its inventory ledger")
+    return 1 if rows else 0
+
+
 def usage_report(args: argparse.Namespace) -> int:
     """Monthly usage from the usage ledger (docs/OPERATIONS.md, "Monthly usage reports"). Read-only: one snapshot in a
     READ ONLY transaction; no provider is called and nothing is sent. One shop (--business): the calendar month of
@@ -159,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--hours", type=int, default=24, help="only events that died in the last N hours")
     q.add_argument("--id", help="a single webhook_events id")
     q.set_defaults(func=requeue_dead)
+    i = sub.add_parser("inventory-check", help="List products whose stock differs from the inventory ledger")
+    i.set_defaults(func=inventory_check)
     u = sub.add_parser("usage-report", help="Monthly usage and estimated costs from the usage ledger (read-only)")
     u.add_argument("--month", help="YYYY-MM (default: this month)")
     u.add_argument("--business", help="one shop's id: its own time zone; omitted: every shop, in UTC")

@@ -194,6 +194,7 @@ def test_order_state_machine(shop, db, fashion):
     db.commit()
     with pytest.raises(ValidationError):
         OrderService(db, bid).transition(order, "delivered")  # must be accepted first
+    db.rollback()  # as a request does after an error: the check holds the order's row lock until then
     for forbidden in ("paid", "awaiting_payment", "processing"):  # payment is not an order status
         assert fashion.patch(f"/api/orders/{order.id}", json={"status": forbidden}).status_code == 422
     r = fashion.patch(f"/api/orders/{order.id}", json={"status": "accepted"}).json()

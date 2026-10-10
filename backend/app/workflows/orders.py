@@ -74,8 +74,9 @@ def _review_eta(business: Business, lang: str = "en") -> str:
 
 def owner_set_status(db: Session, user: User, order: Order, status: str, reason: str | None = None) -> Order:
     business = db.get(Business, order.business_id)
-    old = order.status
-    OrderService(db, order.business_id).transition(order, status, reason=reason)
+    orders = OrderService(db, order.business_id)
+    old = orders.lock(order).status  # as committed, after any concurrent change to this order
+    orders.transition(order, status, reason=reason)
     audit_service.record(db, order.business_id, "order.status_changed", "order", order.id, user=user,
                          order_number=order.order_number, **{"from": old, "to": status}, reason=reason)
     instructions = payment_instructions(db, business) if status == "accepted" and order.payment_status != "paid" \

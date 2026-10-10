@@ -179,7 +179,9 @@ class ProductService:
         return p
 
     def update(self, product_id: uuid.UUID, data: dict[str, Any], *, source: str = "api") -> Product:
-        p = self.products.get_or_404(product_id)
+        # Locked like adjust_stock: a new absolute stock is recorded against the balance as committed, so a sale made
+        # meanwhile is neither lost from the ledger nor mis-recorded (Phase D audit D3).
+        p = self.products.get_or_404(product_id, for_update=True)
         reembed = False
         if "sku" in data and data["sku"] and data["sku"] != p.sku:
             if self.products.first(Product.sku == data["sku"], Product.id != p.id):
@@ -206,7 +208,7 @@ class ProductService:
             p.category = cat
             reembed = True
         if data.get("stock_quantity") is not None and int(data["stock_quantity"]) != p.stock_quantity:
-            self.set_stock(p, int(data["stock_quantity"]), reason="adjustment")
+            self.set_stock(p, int(data["stock_quantity"]), reason="import" if source == "csv_import" else "adjustment")
         if reembed:
             self._embed(p)
         self.db.flush()

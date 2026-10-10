@@ -130,7 +130,7 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 | Production LLM not validated; no approved accuracy thresholds; no native review | High (for go-live) | M3, M10, Q2 | E, G |
 | No prices loaded; economics unknown | High (for viability) | OPERATIONS › Usage metering | C1–C3 |
 | Noisy neighbour: one tenant can occupy the shared workers | Medium | F6 (`inbound.py` claim order) | B6 / F |
-| Two concurrent owner actions on one order both apply: two cancellations restock twice, two manual payments are both recorded | High | Phase D audit D1, D2: both reproduced on a throwaway database | D: lock the order row (no product decision) |
+| Two concurrent owner actions on one order both apply: two cancellations restock twice, two manual payments are both recorded | High → fixed | Phase D audit D1, D2 (reproduced); fixed by locking the order row, regression tests in `tests/test_order_integrity.py` | Done (D) |
 | A dead-lettered customer message vanishes from the shop's view (no inbox entry, no alert) | Medium | Phase D audit D5 | D: store and flag it, or list unprocessed messages with a retry (decision) |
 | Unpaid orders hold stock indefinitely | Medium | README › Future work; Phase D audit D6 | D |
 | A CSV import re-embeds every updated product with its own request, changed or not (cost with a paid embedder) | Low | P2 finding 1 (`docs/P2_EMBEDDING_METERING.md` §6); visible in the ledger as `product` rows | C or D: first another way to re-embed a catalog after switching embedders (re-importing is the documented one), then re-embed only changed text and batch an import's updates |

@@ -214,6 +214,11 @@ Every day:
   `duka_ai_guard_over_limit_24h`. A refusal means a message, a customer or the shop used its AI allowance: reply
   to the flagged conversations; repeated refusals for normal traffic mean a limit is too low.
 
+Every week:
+
+- [ ] **HOST — inventory ledger.** `python -m app.cli inventory-check` exits 0 when every product's stock equals the
+  sum of its inventory movements; otherwise it lists the products to investigate before the next stock count.
+
 Every week, and after any prompt or model change:
 
 - [ ] **HOST + LOCAL — grounding review.** The review happens on the production host; the corrections are made in

@@ -63,7 +63,7 @@ class PaymentService:
         business = self.db.get(Business, self.business_id)
         if not business.payment_enabled:
             raise ValidationError("Online payment is not enabled for this business", code="payment_disabled")
-        self._payable(order)
+        self._payable(self.orders.lock(order))
         name = self.provider_name()
         if name == "manual":
             raise ValidationError("This shop takes payment manually; share the payment instructions instead")
@@ -104,7 +104,11 @@ class PaymentService:
         """Apply a provider-confirmed status. Idempotent: returns True only if state changed."""
         if status not in ("pending", "successful", "failed"):
             raise ValidationError(f"Invalid payment status '{status}'")
-        payment = self.payments.get(payment.id, for_update=True)
+        # Lock order: the order, then the payment, as every other payment change does (no deadlock); every change
+        # to this order's payments is serialised, so the order's payment status is derived from committed rows.
+        order = self.orders.lock(self.orders.get(payment.order_id))
+        payment = self.payments.get(payment.id)
+        self.db.refresh(payment, with_for_update=True)
         if payment.provider == "manual":
             raise ValidationError("Manual payments are confirmed by the owner, not by a provider")
         if payment.status in ("successful", "failed", "cancelled", "voided") or status == "pending":
@@ -112,7 +116,6 @@ class PaymentService:
         payment.status = status
         payment.raw = {**(payment.raw or {}), "confirmation": raw or {}}
         payment.failure_reason = failure_reason
-        order = self.orders.get(payment.order_id)
         if status == "successful":
             payment.confirmed_at = datetime.now(timezone.utc)
             payment.confirmation_source = "provider"
@@ -140,7 +143,7 @@ class PaymentService:
         reference = (reference or "").strip()
         if not 4 <= len(reference) <= 128:
             raise ValidationError("Please send the full transaction reference", code="reference_too_short")
-        self._payable(order)
+        self._payable(self.orders.lock(order))
         existing = self.payments.first(Payment.order_id == order.id, Payment.provider == "manual",
                                        Payment.external_reference == reference)
         if existing:
@@ -166,7 +169,7 @@ class PaymentService:
             raise ValidationError("A transaction reference is required for MoMo and bank payments")
         if method in ("cash", "other") and not (reference or note):
             raise ValidationError("Add a note (e.g. who received the cash) or a receipt number")
-        self._payable(order)
+        self._payable(self.orders.lock(order))  # a second, concurrent record now finds the order paid
         now = datetime.now(timezone.utc)
         # Settle the customer's reported reference if it matches, otherwise record a new payment.
         payment = self.payments.first(Payment.order_id == order.id, Payment.provider == "manual",
@@ -199,11 +202,12 @@ class PaymentService:
         reason = (reason or "").strip()
         if not reason:
             raise ValidationError("A reason is required to void a payment")
+        order = self.orders.lock(self.orders.get(payment.order_id))
+        self.db.refresh(payment)  # as committed, after any concurrent change to this order's payments
         if payment.provider != "manual" or payment.status != "successful":
             raise ValidationError("Only a successful manual payment can be voided")
         payment.status = "voided"
         payment.note = f"{payment.note or ''}\nVoided by {user.email}: {reason}".strip()
-        order = self.orders.get(payment.order_id)
         self._sync_order_status(order)
         audit_service.record(self.db, self.business_id, "payment.voided", "order", order.id, user=user,
                              payment_id=str(payment.id), reason=reason)

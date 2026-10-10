@@ -1,8 +1,8 @@
 # Phase D — Merchant operations and inventory: audit
 
 Roadmap: `docs/ROADMAP.md` Phase D ("audit first, then close material gaps only"). Status: read-only audit,
-2026-10-10, of the code at `0f82acb`. Nothing in this document has been fixed yet. Each finding says whether its fix
-needs a product decision.
+2026-10-10, of the code at `0f82acb`. Fixed since, with regression tests: D1–D4, D13, D14
+(`tests/test_order_integrity.py`) and D12 (`tests/test_payments.py`). D5–D11 await product decisions.
 
 Method: the order, stock, payment, inbound and recovery paths were read in full (models, services, workflows,
 routes, the operator command, the agent tools and their tests). The two concurrency findings (D1, D2) were reproduced

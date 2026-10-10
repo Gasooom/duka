@@ -479,7 +479,15 @@ class OrderService:
         where = [Order.status == status] if status else []
         return self.orders.list(where=where, order_by=[Order.created_at.desc()], limit=limit)
 
+    def lock(self, order: Order) -> Order:
+        """Re-read the order under a row lock (SELECT ... FOR UPDATE) before changing it or its payments: changes to
+        one order then run one after the other, each on the state the previous one committed. Without it, two
+        simultaneous cancellations both passed the status check and restocked twice (Phase D audit D1, D2)."""
+        self.db.refresh(order, with_for_update=True)
+        return order
+
     def transition(self, order: Order, new_status: str, *, reason: str | None = None) -> Order:
+        self.lock(order)
         if new_status not in ORDER_TRANSITIONS:
             raise ValidationError(f"Unknown status '{new_status}'")
         if new_status not in ORDER_TRANSITIONS[order.status]:
@@ -495,13 +503,17 @@ class OrderService:
         return order
 
     def _restock(self, order: Order) -> None:
+        # One lock statement in product-id order, as at checkout: a cancellation and a checkout of the same products
+        # never wait for each other in a cycle (deadlock).
+        ids = sorted({item.product_id for item in order.items if item.product_id})
+        stmt = self.products.query().where(Product.id.in_(ids)).order_by(Product.id).with_for_update(of=Product)
+        locked = {p.id: p for p in self.db.scalars(stmt)} if ids else {}
         for item in order.items:
-            if item.product_id:
-                p = self.products.get(item.product_id, for_update=True)
-                if p:
-                    p.stock_quantity += item.quantity
-                    self.inventory.add(product_id=p.id, change=item.quantity, balance_after=p.stock_quantity,
-                                       reason="order_cancelled", reference=order.order_number)
+            p = locked.get(item.product_id)
+            if p:
+                p.stock_quantity += item.quantity
+                self.inventory.add(product_id=p.id, change=item.quantity, balance_after=p.stock_quantity,
+                                   reason="order_cancelled", reference=order.order_number)
 
     def revenue(self) -> Decimal:
         stmt = self.orders.select(func.coalesce(func.sum(Order.total), 0)).where(

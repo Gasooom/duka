@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 764 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 769 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -111,6 +111,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_embedding_metering.py` | Requests to a paid embeddings provider in the same ledger: one `embedding` row per request, never per text (a product, a CSV import's batch, a knowledge document's chunks, each search), for the tenant that made it; tokens and served model as reported, retries as attempts; a failed request is recorded while the import still fails and the search still ranks by words; nothing for the free hash embedder or a request never sent; rows survive a rollback and a ledger failure breaks nothing; embeddings prices (served model first, exact before prefix, unreported tokens unpriced, failed = 0, half-even rounding, invalid lists refused); evaluation runs record nothing; no WhatsApp fields, insert-only |
 | `test_migration_0012.py` | On scratch databases: 0012 keeps every row and admits embedding rows without WhatsApp fields; downgrade is refused while embedding usage exists and works (and can be redone) when there is none; the model's CHECK constraints on `usage_events` equal the migrated ones |
 | `test_usage_report.py` | Monthly usage reports from the ledger: a shop's month in its own time zone and every shop's in UTC, at month, year and daylight-saving boundaries (including a change at midnight); empty months; unpriced, partially priced and multi-currency costs, never an unknown price as 0; provider retries as attempts and WhatsApp messages counted once; real, simulated and unknown traffic apart; every figure equal to a row-by-row count of random ledger rows for two shops; the API's shop comes from the token only; the operator command; reports only read (READ ONLY snapshot, no provider call, nothing sent, ledger unchanged); the shop-and-time index is used |
+| `test_order_integrity.py` | Two simultaneous cancellations of one order restock once; two simultaneous cash payments record one; a stock count during a sale keeps the inventory ledger exact; a cancellation locks its products in one statement in product-id order; a CSV import's stock is labelled `import`, and `inventory-check` finds a stock change that bypassed the ledger |
 | `test_migration_0010.py` | On scratch databases: 0010 keeps AI rows untouched, the ledger stays insert-only, downgrade is refused while WhatsApp usage exists and works (and can be redone) when there is none, models match the migrated schema (`alembic check`) |
 
 ---
@@ -229,7 +230,7 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 ```
 
 ## Verification status (honest)
-- ✅ 764 backend tests pass against PostgreSQL 16 + pgvector (CI runs
+- ✅ 769 backend tests pass against PostgreSQL 16 + pgvector (CI runs
   the suite on every push to `main`). Ruff is clean.
 - ✅ Migrations go up and down cleanly from an empty DB. `alembic check` reports the models are in sync.
 - ✅ The backend and the production Next.js build ran locally. Playwright drove the dashboard: login, the simulator
