@@ -65,7 +65,7 @@ def _snapshot(t) -> dict:
         "/api/business", "/api/business/agent-config", "/api/business/settings", "/api/delivery-zones",
         "/api/whatsapp/accounts", "/api/products", "/api/categories", "/api/orders", "/api/customers",
         "/api/conversations", "/api/knowledge", "/api/dashboard/stats", "/api/dashboard/usage",
-        "/api/dashboard/notifications", "/api/dashboard/audit")}
+        "/api/dashboard/notifications", "/api/dashboard/audit", "/api/usage/monthly")}
     snap["orders_detail"] = [t.get(f"/api/orders/{o['id']}").json() for o in snap["/api/orders"]]
     snap["conversations_detail"] = [t.get(f"/api/conversations/{c['id']}").json() for c in snap["/api/conversations"]]
     snap["inventory"] = [t.get(f"/api/products/{p['id']}/inventory").json() for p in snap["/api/products"]]
@@ -146,6 +146,11 @@ def test_lists_searches_and_aggregates_only_show_own_rows(fashion, electronics, 
     assert usage["agent_runs"] == usage["messages_in"] == usage["messages_out"] == 0
     b_usage = b_snap["/api/dashboard/usage"]
     assert b_usage["agent_runs"] >= 5 and b_usage["messages_in"] == 5
+    # The monthly usage report (the ledger): B's WhatsApp traffic is B's alone.
+    a_month, b_month = a_snap["/api/usage/monthly"], b_snap["/api/usage/monthly"]
+    assert a_month["business_id"] == a.business_id and a_month["kinds"] == a_month["lines"] == []
+    assert b_month["business_id"] == b.business_id
+    assert {k["kind"] for k in b_month["kinds"]} >= {"wa_in", "wa_out"} and kind_events(b_month, "wa_in") == 5
 
     b_names = {p["name"] for p in b_snap["/api/products"]}
     assert a.get("/api/knowledge/search", params={"q": "warranty code ZEBRA"}).json() == []
@@ -153,6 +158,10 @@ def test_lists_searches_and_aggregates_only_show_own_rows(fashion, electronics, 
                a.get("/api/products/search", params={"q": "Samsung phone"}).json())
     assert a.get("/api/products", params={"q": "Samsung"}).json() == []
     assert a.get("/api/customers", params={"q": B_CUSTOMER[-6:]}).json() == []
+
+
+def kind_events(report: dict, kind: str) -> int:
+    return sum(k["events"] for k in report["kinds"] if k["kind"] == kind)
 
 
 def test_tenant_singletons_are_isolated(fashion, electronics):

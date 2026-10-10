@@ -45,7 +45,11 @@ def stats(ctx: TenantContext = Depends(get_tenant)):
 
 @router.get("/usage")
 def usage(days: int = Query(30, ge=1, le=366), ctx: TenantContext = Depends(get_tenant)):
-    """AI and messaging usage for this tenant over the last `days` days (from agent_runs/messages)."""
+    """Assistant and messaging ACTIVITY for this tenant over the last `days` days, counted from agent_runs and
+    messages. Not a provider-usage or cost report: `llm_calls` also counts the offline rules engine, the calls of a
+    turn that failed and was retried are not all here, and messages are not send attempts. Provider usage and
+    estimated costs: GET /api/usage/monthly (the usage ledger). Its semantics are to be revisited with the usage UI
+    (roadmap C5)."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
     runs = AgentRunRepo(ctx.db, ctx.business_id)
     row = ctx.db.execute(runs.select(

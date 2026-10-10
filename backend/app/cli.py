@@ -114,6 +114,40 @@ def llm_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def usage_report(args: argparse.Namespace) -> int:
+    """Monthly usage from the usage ledger (docs/OPERATIONS.md, "Monthly usage reports"). Read-only: one snapshot in a
+    READ ONLY transaction; no provider is called and nothing is sent. One shop (--business): the calendar month of
+    its own time zone, as the shop's report shows it. All shops: UTC months."""
+    import json
+    import uuid
+
+    from sqlalchemy import select
+
+    from app.db.session import engine
+    from app.models import Business
+    from app.services import usage_report as reports
+    try:
+        if args.business:
+            try:
+                business_id = uuid.UUID(args.business)
+            except ValueError:
+                print("error: --business must be a business id", file=sys.stderr)
+                return 1
+            with reports.snapshot(engine) as db:
+                shop = db.execute(select(Business.name, Business.timezone).where(Business.id == business_id)).first()
+            if shop is None:
+                print("error: no business with that id", file=sys.stderr)
+                return 1
+            report = {**reports.tenant_month(engine, business_id, shop.timezone, args.month), "name": shop.name}
+        else:
+            report = reports.operator_month(engine, args.month)
+    except DomainError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2) if args.json else reports.format_text(report))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -125,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--hours", type=int, default=24, help="only events that died in the last N hours")
     q.add_argument("--id", help="a single webhook_events id")
     q.set_defaults(func=requeue_dead)
+    u = sub.add_parser("usage-report", help="Monthly usage and estimated costs from the usage ledger (read-only)")
+    u.add_argument("--month", help="YYYY-MM (default: this month)")
+    u.add_argument("--business", help="one shop's id: its own time zone; omitted: every shop, in UTC")
+    u.add_argument("--json", action="store_true", help="the full report as JSON")
+    u.set_defaults(func=usage_report)
     c = sub.add_parser("llm-check", help="Make one real call to the configured LLM (needs LLM_API_KEY)")
     c.add_argument("--message", default="Muraho! Ndashaka inkweto z'umukara ziri munsi ya 100,000 RWF.")
     c.set_defaults(func=llm_check)

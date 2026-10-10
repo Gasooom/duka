@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app import ops
 from app.api.middleware import SecurityMiddleware
-from app.api.routes import auth, business, crm, dashboard, dev, knowledge, orders, products, webhooks
+from app.api.routes import auth, business, crm, dashboard, dev, knowledge, orders, products, usage, webhooks
 from app.core.config import settings
 from app.core.errors import DomainError
 from app.core.logging import clear_context, configure_logging, get_logger, log_event, request_id_var, safe_error
@@ -80,7 +80,7 @@ async def unhandled(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
-for r in (auth, business, products, orders, crm, knowledge, dashboard, webhooks, dev):
+for r in (auth, business, products, orders, crm, knowledge, dashboard, usage, webhooks, dev):
     app.include_router(r.router)
 
 

@@ -18,16 +18,16 @@ a running Docker stack or a passing mocked end-to-end test answer none of them o
 
 ## 2. Value proposition, and what exists today
 
-Verified against the code on 2026-10-10 (commit `e1a18c2`; row C updated for P1 at `f3fa3e4`). "Exists" means
-implemented and covered by tests in CI; it does not mean validated with a real merchant, real WhatsApp traffic or
-the production model.
+Verified against the code on 2026-10-10 (commit `e1a18c2`; row C updated for P1 at `f3fa3e4`, row D for C2).
+"Exists" means implemented and covered by tests in CI; it does not mean validated with a real merchant, real
+WhatsApp traffic or the production model.
 
 | Area | Exists (CI-tested) | Known gaps |
 |---|---|---|
 | **A. Products and inventory** | Product CRUD and CSV import with per-row errors; deactivate; stock changes recorded in the `inventory` movement ledger (`ProductService.set_stock` / `adjust_stock`); stock rows locked `FOR UPDATE` in id order at checkout (`commerce_service.py`, ~l. 432); restock on cancellation (`_restock`); the AI gets prices and stock only from tools, and grounding rejects invented ones | No inventory-discrepancy / stock-count workflow beyond adjustments; unpaid orders never expire and release stock (README › Future work); search is unindexed beyond a few thousand products |
 | **B. Orders and customers** | Explicit YES to a delivered server summary (CLAUDE.md rule 7); status and payment state machines; manual payments with evidence; audit trail; owner notifications and reminders; human handoff and takeover; 24-hour window handling | No staff invitations/roles UI (single owner login); refunds and partial payments are manual |
 | **C. AI reliability** | Grounding check with deterministic fallback; adversarial eval gate in CI; per-turn caps (5 iterations, 8 tool calls, 45 s, 3 HTTP attempts); Runaway Conversation Guard (P1): a per-message budget across retries, enforced, and per-customer and per-tenant hour/day limits | Customer and tenant limits not chosen yet (observe mode); real-provider eval only from a developer key; no native-speaker review |
-| **D. System and business management** | Dashboard (inbox, orders, products, knowledge, settings, alerts, setup checklist); `/healthz`, `/readyz`, `/metrics`; scrubbed JSON logs; backup/restore scripts with a verified restore; usage ledger (AI + WhatsApp) | No usage/cost aggregation or merchant-facing usage view; no quotas or spend alerts; no platform admin console; multi-instance not validated |
+| **D. System and business management** | Dashboard (inbox, orders, products, knowledge, settings, alerts, setup checklist); `/healthz`, `/readyz`, `/metrics`; scrubbed JSON logs; backup/restore scripts with a verified restore; usage ledger (AI, embeddings, WhatsApp) with monthly reports per shop and across shops (C2: operator command, read-only API) | No merchant-facing usage view (C5); no quotas or spend alerts; no platform admin console; multi-instance not validated |
 
 ## 3. The four acceptance questions
 
@@ -37,7 +37,7 @@ Every milestone must move at least one answer forward with evidence. Current sta
 |---|---|---|---|---|
 | Q1 | Can a real merchant operate independently? | Onboarding path; product/inventory workflow; a real WhatsApp conversation; an end-to-end order; merchant visibility of orders, errors and actions; a supervised pilot where the merchant completes agreed tasks | Dashboard walk-through in a headless browser (CI); mocked WhatsApp E2E (CI); no real merchant, no real WhatsApp | BLOCKED (merchant, Meta) |
 | Q2 | Are AI answers accurate and safe enough? | Regression + adversarial eval; thresholds approved **before** the final run; zero fabricated payment/order/refund claims in critical cases; native review per pilot language; real-provider run with the production configuration | Offline + adversarial gate in CI; real model (`gpt-4o-mini`, developer key) 67/71 on suite v1.2.0 (`docs/VALIDATION_REPORT.md`); no approved thresholds; no native review | IN PROGRESS / BLOCKED (LLM account, reviewers) |
-| Q3 | Is the business economically viable? | Real usage and cost per merchant (AI calls, tokens, retries, embeddings; WhatsApp messages/templates; hosting, DB, backups, monitoring; support); revenue per merchant; margin, break-even, low/expected/high scenarios; the usage level where a merchant becomes unprofitable | Usage ledger records AI calls and WhatsApp traffic (Phase 4 P0) and paid embeddings requests (C1); no prices loaded (all unpriced); no aggregation; no revenue model | NOT STARTED (needs prices, invoices, pricing decision) |
+| Q3 | Is the business economically viable? | Real usage and cost per merchant (AI calls, tokens, retries, embeddings; WhatsApp messages/templates; hosting, DB, backups, monitoring; support); revenue per merchant; margin, break-even, low/expected/high scenarios; the usage level where a merchant becomes unprofitable | Usage ledger records AI calls and WhatsApp traffic (Phase 4 P0) and paid embeddings requests (C1); monthly reports per shop and across shops, unpriced usage named as such (C2); no prices loaded (all unpriced); no revenue model | NOT STARTED (needs prices, invoices, pricing decision) |
 | Q4 | Does the system stay safe under growth and failure? | Measured targets set first, then: multi-tenant concurrency, duplicate webhooks, provider failures and ambiguous outcomes, DB failures and lock contention, worker restarts, AI loops and usage spikes, inventory races, noisy neighbours, backup/restore, security, migration-failure recovery | Many failure paths tested in CI (durability, isolation, concurrency, DB limits, crash recovery live-tested locally); restore drill verified locally; AI loops bounded per message by default and per customer/tenant once limits are set (P1, CI-verified with mocked providers; limits not chosen); no load test; multi-instance not validated | IN PROGRESS |
 
 Unpriced usage is never treated as zero cost. A spreadsheet margin built on unverified prices does not answer Q3.
@@ -84,7 +84,7 @@ C1 embedding metering · C2 monthly usage aggregation (real vs simulated, unknow
 C3 tenant cost model (known prices + documented infrastructure allocation; estimates labelled) · C4 quotas and spend
 alerts · C5 merchant usage UI (tenant-isolated) · C6 billing, deferred until C2–C4 are validated.
 Needs: provider price lists or invoices (C3), a pricing/revenue decision (C3, C6). Status: C1 CI-verified
-(`0f82acb`); C2's design is proposed in `docs/P3_MONTHLY_USAGE.md` with decisions C2-D1–D3 pending.
+(`0f82acb`); C2 decisions C2-D1–D3 approved 2026-10-10 and implemented (`docs/P3_MONTHLY_USAGE.md`).
 
 ### Phase D — Merchant operations and inventory reliability
 Audit first, then close material gaps only: inventory consistency and discrepancy handling, unpaid-order expiry and
@@ -132,6 +132,7 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 | Unpaid orders hold stock indefinitely | Medium | README › Future work | D |
 | A CSV import re-embeds every updated product with its own request, changed or not (cost with a paid embedder) | Low | P2 finding 1 (`docs/P2_EMBEDDING_METERING.md` §6); visible in the ledger as `product` rows | C or D: first another way to re-embed a catalog after switching embedders (re-importing is the documented one), then re-embed only changed text and batch an import's updates |
 | Multi-instance behaviour unvalidated | Medium | README › Future work | F |
+| Time zone data comes from the OS image (`tzdata` is not a Python requirement) | Low | C2 finding 1: the current backend image carries Debian's tzdata 2026c; without it business hours and shop-time-zone reports lose their zone | F: pin `tzdata`, or check a zone in the image build |
 
 ## 7. Rollback and release discipline
 

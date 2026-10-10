@@ -160,6 +160,32 @@ A file that cannot be read or is not a valid price list (a typo in a key, a nega
 category, the same market priced twice) stops the backend from starting, with the reason. If a row cannot be written,
 the customer's reply still goes out.
 
+### Monthly usage reports
+
+Read from `usage_events` only (design and decisions: `docs/P3_MONTHLY_USAGE.md`):
+
+- **One shop:** `GET /api/usage/monthly?month=YYYY-MM` (the signed-in shop only; this month when `month` is
+  omitted) or `python -m app.cli usage-report --month YYYY-MM --business <id> [--json]`. The month is the calendar
+  month of the shop's time zone (`businesses.timezone`): from the first instant of local day 1 to the first instant
+  of local day 1 of the next month, end excluded, following daylight-saving changes (one that skips local midnight
+  starts the month at the change). A configured zone that cannot be used is replaced by UTC, and the report says so.
+- **Every shop:** `python -m app.cli usage-report --month YYYY-MM [--json]`, in UTC months: one section per shop
+  with usage, then platform totals. Near a month's end a shop's own report and this one differ by the shop's offset.
+- **What is counted:** model calls and embeddings requests (events, texts, HTTP attempts, tokens, and successful
+  events whose tokens the provider did not report); inbound WhatsApp messages; WhatsApp send attempts, and messages
+  counted once (attempted, accepted by WhatsApp, failed later). The `attempts` value on a WhatsApp row is the
+  attempt's number and is never added up. Real, simulated and unknown WhatsApp traffic are always separate. A
+  provider's retries are attempts inside one event; a turn processed again made new calls, which are counted
+  because they were made. Evaluation runs never reach the ledger.
+- **Costs:** summed per currency over priced events only, with the price versions used. `pricing` is `priced`,
+  `partially_priced` (some events have no price: the amounts leave them out), `unpriced` or `no_usage`, and
+  `unpriced_events_by_kind` says which. An unpriced event is never counted as 0; inbound messages are never priced.
+- **Read-only:** each report is one REPEATABLE READ, READ ONLY transaction (PostgreSQL refuses writes); it calls no
+  provider and sends nothing.
+- `GET /api/dashboard/usage` is an activity metric (agent runs and messages from `agent_runs` and `messages`), not
+  provider usage or cost: its `llm_calls` also counts the rules engine. It is unchanged and will be revisited with
+  the usage UI (C5).
+
 ## Runaway Conversation Guard
 
 Design and status: `docs/P1_RUNAWAY_GUARD.md`. Every real model call and every provider HTTP attempt is reserved in

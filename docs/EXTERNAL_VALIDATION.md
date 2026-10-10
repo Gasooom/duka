@@ -227,6 +227,15 @@ Every week, and after any prompt or model change:
     `tests/test_grounding_multilingual.py`. A false claim that was sent goes into `CLAIMS`. Fix the patterns
     afterwards.
 
+Every month:
+
+- [ ] **HOST — usage reconciliation.**
+  - **Do:** run `python -m app.cli usage-report --month <last month>` (every shop, UTC months) and compare model
+    calls and tokens, embeddings requests and WhatsApp sends with each provider's own usage figures (its dashboard
+    or invoice) for the same UTC month.
+  - **Record:** the differences and their causes; `usage.record_failed` logs are events the ledger missed.
+    Unpriced events stay unpriced until the price list covers them; they are never read as free.
+
 ## 7. After the pilot (not before)
 
 - [ ] **DECISION + LOCAL — customer-data retention and erasure.** The legal and product decision comes first, then
