@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from app.agents.providers.base import LLMError, LLMProvider, LLMResponse, ToolCall
+from app.agents.providers.base import LLMError, LLMProvider, LLMResponse, ToolCall, may_send_attempt
 from app.core.config import settings
 
 RETRYABLE = {408, 409, 429, 500, 502, 503, 504}
@@ -54,6 +54,9 @@ class OpenAICompatProvider(LLMProvider):
             remaining = deadline - time.monotonic()
             if remaining < MIN_ATTEMPT_SECONDS:
                 last_err = last_err or "no time left in the turn budget"
+                break
+            if attempt > 1 and not may_send_attempt(attempt):  # the guard reserves every retry before it is sent
+                last_err = last_err or "provider attempt budget reached"
                 break
             retry_after = None
             sent = attempt

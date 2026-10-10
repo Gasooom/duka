@@ -146,7 +146,7 @@ def test_operator_can_requeue_dead_letters(fashion, outbox, db, monkeypatch):
     from app.workflows import inbound
     from tests.conftest import drain
     real = inbound.process_message
-    monkeypatch.setattr(inbound, "process_message", lambda db_, msg: (_ for _ in ()).throw(RuntimeError("bug")))
+    monkeypatch.setattr(inbound, "process_message", lambda db_, msg, **kw: (_ for _ in ()).throw(RuntimeError("bug")))
     fashion.send("black sneakers")
     db.execute(update(WebhookEvent).values(status="dead"))
     db.commit()

@@ -10,7 +10,7 @@ import uuid
 from app.core.config import settings
 from app.core.logging import get_logger, log_event, safe_error
 from app.db.session import SessionLocal
-from app.ops import purge_processed_events
+from app.ops import purge_ai_usage_counters, purge_processed_events
 from app.services.messaging_service import deliver_due, recover_stale_sends
 from app.workflows.inbound import claim, process_event, release
 from app.workflows.orders import remind_aging_orders
@@ -102,9 +102,12 @@ class BackgroundWorkers:
             self._last_purge = time.monotonic()
             with self.session_factory() as db:
                 purged = purge_processed_events(db, settings.webhook_event_retention_days)
+                counters = purge_ai_usage_counters(db, settings.webhook_event_retention_days)
                 db.commit()
             if purged:
                 log_event(logger, "webhook_events.purged", operation="retention", count=purged)
+            if counters:
+                log_event(logger, "ai_usage_counters.purged", operation="retention", count=counters)
         return done
 
     def _loop(self) -> None:

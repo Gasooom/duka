@@ -223,7 +223,7 @@ def process_event(event_id: uuid.UUID, attempts: int, session_factory=SessionLoc
         event = db.get(WebhookEvent, event_id)
         msg = InboundMessage.from_payload(event.payload)
         with log_operation(logger, "inbound.process", attempt=attempts) as ctx:
-            result = process_message(db, msg)
+            result = process_message(db, msg, event_id=event_id)
             ctx["result"] = result.status
         event.status, event.result = "done", result.status
         event.processed_at, event.locked_until, event.last_error = datetime.now(timezone.utc), None, None
@@ -272,7 +272,7 @@ def run_due(session_factory=SessionLocal, limit: int | None = None) -> list[Proc
     return results
 
 
-def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
+def process_message(db: Session, msg: InboundMessage, *, event_id: uuid.UUID | None = None) -> ProcessResult:
     account = resolve_account(db, msg.phone_number_id)
     if account is None:
         return ProcessResult(status="unknown_tenant")
@@ -335,7 +335,7 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
         send_to_customer(db, business.id, conv, reply)
         return ProcessResult(status="unsupported", business_id=business.id, conversation_id=conv.id, reply=reply)
 
-    outcome = AgentEngine(db, business).run(customer, conv, inbound)
+    outcome = AgentEngine(db, business, event_id=event_id).run(customer, conv, inbound)
     sent = send_to_customer(db, business.id, conv, outcome.text, agent_run_id=outcome.run.id)
     if outcome.checkout_cart_id:
         CheckoutService(db, business.id).attach_summary_message(outcome.checkout_cart_id, sent.id)

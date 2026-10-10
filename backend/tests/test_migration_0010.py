@@ -109,7 +109,7 @@ def test_downgrade_without_whatsapp_usage_restores_0009_and_can_be_redone(scratc
         insert_event(eng, "wa_in", "wa_in:wamid.1", "received")
     with eng.connect() as conn:
         assert conn.execute(text("SELECT input_tokens FROM usage_events")).scalar() == 3
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0010")
     assert version(eng) == "0010"
     insert_event(eng, "wa_in", "wa_in:wamid.1", "received", is_real=True)
 

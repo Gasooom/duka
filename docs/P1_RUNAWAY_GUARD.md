@@ -1,7 +1,7 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed 2026-10-10. B1 (deadlines) needs no product decision and is implemented (§9); B2–B6 wait
-for the decisions in §10.
+Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1 and B2 implemented (§9); B3–B5 in
+progress; B6 (fairness) deferred (D5).
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
 ## 1. Goal
@@ -182,15 +182,45 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
 - Not covered: other external calls inside tools (MoMo `request_payment`, not enabled) are bounded only by their own
   timeouts.
 
-## 10. Decisions needed (product owner)
+**B2 — counters and observe mode** (migration `0011`, `app/services/ai_guard.py`, `tests/test_ai_guard.py`,
+`tests/test_migration_0011.py`):
+- `ai_usage_counters` holds, per tenant, rows for `message` (subject = the webhook event id, period `lifetime`),
+  `customer` and `tenant` (periods `hour`, `day`), with `calls`, `attempts`, `over_limit`, `denied`, `alerted_at`.
+- `AgentEngine._complete` reserves one call and its first attempt before every metered model call; the provider's
+  own retries are reserved through an attempt gate (`providers/base.py` `may_send_attempt`, called by
+  `OpenAICompatProvider` before each attempt after the first), so adapter retries are counted like the call itself.
+- The webhook event id is passed from `process_event` through `process_message` to the engine, so a message's
+  budget is the same row on every retry, lease reclaim and graceful-shutdown release.
+- Each reservation is its own transaction on its own connection, rows in a fixed order; it survives a rollback of
+  the turn (tested) and loses no update under concurrent workers (tested with 8 threads).
+- Observe mode (the default for every scope) counts, increments `over_limit` and logs `ai_guard.decision`
+  `would_block` past a configured limit, and never refuses: replies and model calls are identical with the guard off
+  (tested). A counter-store failure is logged as `ai_guard.store_error` and the call goes ahead in observe mode.
+- Limits: per message, default = one processing attempt (1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, each up to
+  `LLM_MAX_ATTEMPTS` attempts); per customer and tenant, unset (0) by default: counted only, to be chosen from
+  observe-mode data. `enforce` is refused at startup until the scope's enforcement step ships.
+- Retention: hour buckets 2 days, day buckets 8 days, message rows `WEBHOOK_EVENT_RETENTION_DAYS`, in the existing
+  hourly sweep (`ops.purge_ai_usage_counters`); the ledger is never purged. Metrics:
+  `duka_ai_guard_reserved_current_hour`, `duka_ai_guard_busiest_tenant_calls_current_hour`,
+  `duka_ai_guard_over_limit_24h`, `duka_ai_guard_denied_24h`.
 
-- **D1** Counter store unavailable: fail closed (pause AI, deterministic paths keep working; recommended) or fail
-  open.
-- **D2** Windows: hour/day/calendar month; UTC or the tenant's timezone.
-- **D3** Per-tenant overrides: env defaults only, operator CLI, or dashboard (Phase C5).
-- **D4** Quota reached: flag + one owner alert (recommended) or automatic handoff to a person.
-- **D5** Tenant fairness (L7) in P1 or later.
-- **D6** Limit tokens and attempts in P1, or calls only.
+## 10. Decisions (approved by the product owner, 2026-10-10)
+
+- **D1 Failure policy.** Fail closed for new model calls when a reservation cannot be made or trusted (enforce mode).
+  Deterministic commerce paths keep working only when their normal preconditions hold; nothing bypasses order
+  confirmation, payment validation, grounding, authorization or tenant isolation.
+- **D2 Windows.** UTC hour and UTC day, as **fixed buckets** (`date_trunc` in UTC on PostgreSQL's clock), not rolling
+  windows: one row per bucket makes each reservation a single atomic upsert, with no per-event history to sum and no
+  race between counting and inserting. Cost: a burst that straddles a boundary can use up to twice an hourly limit
+  within 60 minutes; the daily bucket still bounds it. No monthly quota in P1.
+- **D3 Configuration.** Environment defaults; operator-controlled per-tenant overrides only if safe in the existing
+  architecture (planned for B5 as an operator-set environment value, no new storage); no dashboard controls in P1.
+- **D4 Quota reached.** Flag the conversation, send a safe fallback with a way to reach a person, and alert the
+  owner at most once per tenant and window. Never claim a handoff or commerce action that did not happen.
+- **D5 Fairness.** Deferred unless measured starvation is shown; keep queue-delay observability.
+- **D6 Units.** Model calls and provider HTTP attempts. No spend limits without reliable prices. **Tokens are
+  deferred:** they are known only after a call returns, providers may not report them (`None`), and a failed or
+  timed-out call has none, so they are not reliable at the point where a reservation must be decided.
 
 ## 11. Non-goals
 

@@ -15,7 +15,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AgentRun, Message, Notification, Order, WebhookEvent
+from app.models import AgentRun, AiUsageCounter, Message, Notification, Order, WebhookEvent
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 _HEAD: str | None = None
@@ -125,6 +125,23 @@ def metrics(db: Session, workers_running: bool) -> str:
     rows = db.execute(select(Notification.status, func.count()).where(Notification.created_at > day)
                       .group_by(Notification.status)).all()
     gauge("duka_owner_alerts_24h", "Owner alerts in the last 24 hours by status.", [({"status": s}, n) for s, n in rows])
+    # Runaway Conversation Guard (services/ai_guard.py): model calls and provider attempts reserved in the current UTC
+    # hour across all tenants, the busiest tenant's share, and reservations past a limit in the last 24 hours.
+    c = AiUsageCounter
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    calls, attempts, busiest = db.execute(select(
+        func.coalesce(func.sum(c.calls), 0), func.coalesce(func.sum(c.attempts), 0), func.coalesce(func.max(c.calls), 0))
+        .where(c.scope == "tenant", c.period == "hour", c.period_start == hour_start)).one()
+    gauge("duka_ai_guard_reserved_current_hour", "Model calls and provider attempts reserved this UTC hour (all tenants).",
+          [({"unit": "calls"}, calls), ({"unit": "attempts"}, attempts)])
+    gauge("duka_ai_guard_busiest_tenant_calls_current_hour", "Model calls reserved this UTC hour by the busiest tenant.",
+          [({}, busiest)])
+    rows = db.execute(select(c.scope, func.coalesce(func.sum(c.over_limit), 0), func.coalesce(func.sum(c.denied), 0))
+                      .where(c.updated_at > day).group_by(c.scope)).all()
+    gauge("duka_ai_guard_over_limit_24h", "Reservations past a limit in observe mode, last 24 hours, by scope.",
+          [({"scope": s}, o) for s, o, _ in rows])
+    gauge("duka_ai_guard_denied_24h", "Reservations refused in enforce mode, last 24 hours, by scope.",
+          [({"scope": s}, d) for s, _, d in rows])
     return "\n".join(lines) + "\n"
 
 
@@ -135,3 +152,21 @@ def purge_processed_events(db: Session, older_than_days: int) -> int:
     result = db.execute(WebhookEvent.__table__.delete().where(WebhookEvent.status.in_(("done", "dead")),
                                                               WebhookEvent.updated_at < cutoff))
     return result.rowcount or 0
+
+
+# Hour buckets are kept two days and day buckets eight (enough to compare today and yesterday with the usage ledger);
+# a message's budget is kept as long as its webhook event can still be requeued (WEBHOOK_EVENT_RETENTION_DAYS).
+AI_COUNTER_RETENTION = {"hour": timedelta(days=2), "day": timedelta(days=8)}
+
+
+def purge_ai_usage_counters(db: Session, message_retention_days: int, now: datetime | None = None) -> int:
+    """Delete Runaway Conversation Guard counters no reservation can touch any more (services/ai_guard.py). They are
+    operational data: the usage history is the usage_events ledger, which is never purged here."""
+    now = now or datetime.now(timezone.utc)
+    t = AiUsageCounter.__table__
+    deleted = 0
+    for period, keep in AI_COUNTER_RETENTION.items():
+        deleted += db.execute(t.delete().where(t.c.period == period, t.c.period_start < now - keep)).rowcount or 0
+    deleted += db.execute(t.delete().where(t.c.period == "lifetime",
+                                           t.c.updated_at < now - timedelta(days=message_retention_days))).rowcount or 0
+    return deleted

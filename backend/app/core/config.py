@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     agent_max_history_messages: int = 8
     agent_max_tool_iterations: int = 5
     agent_summary_trigger_messages: int = 24
+    # Runaway Conversation Guard (docs/P1_RUNAWAY_GUARD.md, app/services/ai_guard.py). Every real model call and every
+    # provider HTTP attempt is reserved in ai_usage_counters before it is made: per inbound message (the webhook event,
+    # across retries), per customer and per tenant, in fixed UTC hour/day buckets. Mode per scope: off = not counted;
+    # observe = counted, and reservations past a limit are logged (ai_guard.decision) but never refused.
+    ai_guard_message_mode: str = "observe"
+    ai_guard_customer_mode: str = "observe"
+    ai_guard_tenant_mode: str = "observe"
+    # Per inbound message, across retries. 0 = what one processing attempt may use: 1 summary call +
+    # AGENT_MAX_TOOL_ITERATIONS calls, each with up to LLM_MAX_ATTEMPTS HTTP attempts.
+    ai_guard_message_calls: int = 0
+    ai_guard_message_attempts: int = 0
+    # Per customer and per tenant, per UTC hour / UTC day. 0 = no limit (counted only): choose values from what
+    # observe mode records, never by guess.
+    ai_guard_customer_calls_per_hour: int = 0
+    ai_guard_customer_calls_per_day: int = 0
+    ai_guard_customer_attempts_per_hour: int = 0
+    ai_guard_customer_attempts_per_day: int = 0
+    ai_guard_tenant_calls_per_hour: int = 0
+    ai_guard_tenant_calls_per_day: int = 0
+    ai_guard_tenant_attempts_per_hour: int = 0
+    ai_guard_tenant_attempts_per_day: int = 0
 
     # Usage metering: path of the operator's price list (JSON, format in app/services/pricing.py). Duka ships no
     # prices; without it every AI model call is still recorded in usage_events, unpriced.
@@ -152,6 +173,23 @@ class Settings(BaseSettings):
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+    @model_validator(mode="after")
+    def _ai_guard_settings(self) -> "Settings":
+        modes = {"off", "observe"}  # enforcement is added scope by scope (docs/P1_RUNAWAY_GUARD.md, B3-B5)
+        for name in ("ai_guard_message_mode", "ai_guard_customer_mode", "ai_guard_tenant_mode"):
+            if getattr(self, name) not in modes:
+                raise ValueError(f"{name.upper()} must be one of {sorted(modes)}")
+        for name, value in self.model_dump().items():
+            if name.startswith("ai_guard_") and isinstance(value, int) and value < 0:
+                raise ValueError(f"{name.upper()} must be 0 (default / no limit) or a positive number")
+        return self
+
+    @property
+    def ai_guard_message_limits(self) -> tuple[int, int]:
+        """(model calls, HTTP attempts) one inbound message may reserve across all its processing attempts."""
+        calls = self.ai_guard_message_calls or 1 + self.agent_max_tool_iterations
+        return calls, self.ai_guard_message_attempts or calls * self.llm_max_attempts
 
     @property
     def allowed_llm_models(self) -> list[str]:

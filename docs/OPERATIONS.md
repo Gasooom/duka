@@ -137,6 +137,39 @@ A file that cannot be read or is not a valid price list (a typo in a key, a nega
 category, the same market priced twice) stops the backend from starting, with the reason. If a row cannot be written,
 the customer's reply still goes out.
 
+## Runaway Conversation Guard
+
+Design and status: `docs/P1_RUNAWAY_GUARD.md`. Every real model call and every provider HTTP attempt is reserved in
+`ai_usage_counters` before it is made: per inbound message (the webhook event, across its retries), per customer and
+per tenant, in fixed UTC hour and day buckets. The table is operational (mutable, purged); the usage history stays
+in `usage_events`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `AI_GUARD_MESSAGE_MODE`, `AI_GUARD_CUSTOMER_MODE`, `AI_GUARD_TENANT_MODE` | `observe` | `off` = not counted; `observe` = counted, and a reservation past a limit is logged (`ai_guard.decision`, `would_block`) but never refused |
+| `AI_GUARD_MESSAGE_CALLS`, `AI_GUARD_MESSAGE_ATTEMPTS` | `0` = one processing attempt | model calls / HTTP attempts one inbound message may use across all its retries (default: 1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, × `LLM_MAX_ATTEMPTS`) |
+| `AI_GUARD_{CUSTOMER,TENANT}_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` | `0` = no limit | per customer / per tenant and UTC hour / day. Choose them from observe-mode data (below), never by guess |
+
+Choosing limits from observe mode (read-only queries; `ai_usage_counters` keeps hour buckets 2 days, day buckets 8):
+
+```sql
+-- busiest tenant-hours and customer-hours in the window kept
+SELECT scope, period, period_start, max(calls) AS calls, max(attempts) AS attempts
+  FROM ai_usage_counters WHERE scope IN ('tenant', 'customer') GROUP BY 1, 2, 3 ORDER BY calls DESC LIMIT 20;
+-- reservations that went past a configured limit (observe) or were refused (enforce)
+SELECT business_id, scope, period, period_start, over_limit, denied FROM ai_usage_counters
+ WHERE over_limit > 0 OR denied > 0 ORDER BY updated_at DESC;
+```
+
+Reconciling with the ledger: for a tenant and UTC hour, `ai_usage_counters.calls` is at least the number of
+`usage_events` rows of kind `llm_call` in that hour (reservations are made before calls, and a ledger write can fail);
+`attempts` is at least the sum of their `attempts`. A difference means calls that never returned a ledger row
+(a crash between reservation and call, or a failed ledger write: `usage.record_failed` in the logs).
+
+Metrics: `duka_ai_guard_reserved_current_hour{unit}`, `duka_ai_guard_busiest_tenant_calls_current_hour`,
+`duka_ai_guard_over_limit_24h{scope}`, `duka_ai_guard_denied_24h{scope}`. Logs: `ai_guard.decision`,
+`ai_guard.store_error` (in observe mode the call goes ahead), `ai_usage_counters.purged`.
+
 ## Backups
 
 ```bash

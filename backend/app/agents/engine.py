@@ -23,6 +23,7 @@ from app.agents.grounding import build_ledger, mentioned_products, verify
 from app.agents.intents import classify_confirmation, wants_human
 from app.agents.language import NAMES
 from app.agents.providers import LLMError, LLMProvider, LLMResponse, get_llm_provider
+from app.agents.providers.base import attempt_gate
 from app.agents.render import render_tool_result
 from app.core.config import settings
 from app.core.deadline import remaining as turn_time_left
@@ -33,6 +34,7 @@ from app.i18n import error_text, t
 from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message, Product
 from app.models.business import AgentConfig as _AgentConfigModel
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo, ProductRepo
+from app.services.ai_guard import AIGuard
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
 from app.services.usage_service import record_llm_call
@@ -120,10 +122,14 @@ def build_system_prompt(business: Business, cfg: AgentConfig, language: str = "e
 
 
 class AgentEngine:
-    def __init__(self, db: Session, business: Business, provider: LLMProvider | None = None):
+    def __init__(self, db: Session, business: Business, provider: LLMProvider | None = None, *,
+                 event_id: uuid.UUID | None = None):
         self.db = db
         self.business = business
         self.provider = provider or get_llm_provider()
+        # Runaway Conversation Guard: every metered call and provider attempt is reserved first, also against the
+        # inbound message's budget across retries (`event_id` = the durable webhook event).
+        self.guard = AIGuard(db.get_bind(), business.id, event_id=event_id)
         self.convs = ConversationService(db, business.id)
         self._state: dict[str, Any] = {}
         self.language = business.language or "en"
@@ -145,13 +151,15 @@ class AgentEngine:
         The rules engine and unmetered providers (evaluation runs) record nothing. `source`: what the call is for."""
         if not (self.provider.is_llm and self.provider.metered):
             return self.provider.complete(messages, tools, **kwargs)
+        self.guard.reserve_call()  # before the call: it counts even if the call or the turn fails
         default = getattr(self.provider, "model", None)  # the provider's own default model, if it has one
         call = dict(idempotency_key=f"llm:{uuid.uuid4()}", source_type=source[0], source_id=source[1],
                     provider=self.provider.name,
                     configured_model=kwargs.get("model") or (default if isinstance(default, str) else None)
                     or settings.llm_model)
         try:
-            resp = self.provider.complete(messages, tools, **kwargs)
+            with attempt_gate(self.guard.reserve_attempt):  # the provider's own retries are reserved too
+                resp = self.provider.complete(messages, tools, **kwargs)
         except Exception as exc:
             record_llm_call(self.db.get_bind(), self.business.id, **call, status="error", model=None,
                             attempts=getattr(exc, "attempts", 1))
@@ -258,6 +266,7 @@ class AgentEngine:
 
     def _run(self, customer: Customer, conv: Conversation, trigger: Message, deadline: float) -> AgentOutcome:
         start = time.perf_counter()
+        self.guard.customer_id = customer.id
         self.language = conversation_language(conv, self.business)
         run = AgentRunRepo(self.db, self.business.id).add(
             conversation_id=conv.id, customer_id=customer.id, trigger_message_id=trigger.id,

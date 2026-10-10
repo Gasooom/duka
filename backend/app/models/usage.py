@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, IdMixin
+from app.db.base import Base, IdMixin, TenantMixin
 
 
 class UsageEvent(IdMixin, Base):
@@ -93,3 +93,38 @@ class UsageEvent(IdMixin, Base):
     message_kind: Mapped[str | None] = mapped_column(String(20))
     template_name: Mapped[str | None] = mapped_column(String(100))
     market: Mapped[str | None] = mapped_column(String(3))
+
+
+class AiUsageCounter(IdMixin, TenantMixin, Base):
+    """Operational counters of the Runaway Conversation Guard (docs/P1_RUNAWAY_GUARD.md, services/ai_guard.py): how
+    many model calls and provider HTTP attempts were RESERVED, before being made, per inbound message (`message`: the
+    webhook event, across retries; period `lifetime`), per customer and per tenant (`hour` / `day`: fixed UTC
+    buckets). Mutable and short-lived, unlike the insert-only usage_events ledger, which stays the history of what
+    actually happened; old buckets are purged (ops.purge_ai_usage_counters).
+
+    A reservation is made in its own short transaction before the call, so it survives a rollback of the turn (the
+    spend was real) and only ever over-counts (a crash between reservation and call). `over_limit` counts reservations
+    that went past a configured limit in observe mode; `denied` counts reservations refused in enforce mode;
+    `alerted_at` marks the owner alert sent for a tenant bucket (at most one per bucket)."""
+
+    __tablename__ = "ai_usage_counters"
+    __table_args__ = (
+        UniqueConstraint("business_id", "scope", "subject_id", "period", "period_start", name="uq_ai_usage_counters_key"),
+        Index("ix_ai_usage_counters_period_start", "period_start"),
+        CheckConstraint("scope IN ('message', 'customer', 'tenant')", name="ck_ai_usage_counters_scope"),
+        CheckConstraint("period IN ('lifetime', 'hour', 'day')", name="ck_ai_usage_counters_period"),
+        CheckConstraint("calls >= 0 AND attempts >= 0 AND over_limit >= 0 AND denied >= 0",
+                        name="ck_ai_usage_counters_non_negative"),
+    )
+
+    scope: Mapped[str] = mapped_column(String(10), nullable=False)
+    # The webhook event (message), the customer, or the business itself (tenant): never NULL, so the key is unique.
+    subject_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    period: Mapped[str] = mapped_column(String(10), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    over_limit: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    denied: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

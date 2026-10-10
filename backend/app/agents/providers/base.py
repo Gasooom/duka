@@ -1,6 +1,28 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
+
+# The Runaway Conversation Guard's check before each provider HTTP attempt after the first (app/services/ai_guard.py):
+# set by the agent engine around a metered call, so an adapter's own retries are reserved like the call itself.
+_attempt_gate: ContextVar[Callable[[int], bool] | None] = ContextVar("duka_attempt_gate", default=None)
+
+
+def may_send_attempt(attempt: int) -> bool:
+    """Ask before sending HTTP attempt `attempt` (1-based) of the current model call. True outside a metered call."""
+    gate = _attempt_gate.get()
+    return True if gate is None else gate(attempt)
+
+
+@contextmanager
+def attempt_gate(gate: Callable[[int], bool]) -> Iterator[None]:
+    token = _attempt_gate.set(gate)
+    try:
+        yield
+    finally:
+        _attempt_gate.reset(token)
 
 
 @dataclass

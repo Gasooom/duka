@@ -156,10 +156,10 @@ def test_duplicate_and_concurrent_redeliveries_have_one_effect(fashion, outbox, 
 def test_retries_then_dead_letter_and_per_customer_order(fashion, outbox, db, monkeypatch):
     real = inbound.process_message
 
-    def poison(db_, msg):
+    def poison(db_, msg, **kw):
         if msg.text == "poison":
             raise RuntimeError("cannot process")
-        return real(db_, msg)
+        return real(db_, msg, **kw)
 
     monkeypatch.setattr(inbound, "process_message", poison)
     fashion.send("poison", wa_id="wamid.P1")

@@ -34,11 +34,11 @@ def test_one_bad_message_does_not_block_the_batch(fashion, outbox, monkeypatch):
     real = inbound.process_message
     calls = {"n": 0}
 
-    def flaky(db, msg):
+    def flaky(db, msg, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("boom")
-        return real(db, msg)
+        return real(db, msg, **kw)
 
     monkeypatch.setattr(inbound, "process_message", flaky)
     from app.integrations.whatsapp.parser import build_text_webhook
