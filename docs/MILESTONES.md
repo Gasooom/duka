@@ -535,6 +535,10 @@ with M4); there is no real price list, so no cost has been computed; the calling
 Recorded on 2026-10-10 as a proposed product plan. It is not a record of work done, none of these slices exists in
 the code, and the order may change when it is approved.
 
+Later on 2026-10-10 the product owner adopted these slices as Phases B (P1) and C (P2–P7) of the working roadmap,
+`docs/ROADMAP.md`; the live status is in `CLAUDE.md`. P1's reviewed design is `docs/P1_RUNAWAY_GUARD.md`. Each slice
+still needs its open product decisions approved before it is implemented.
+
 | Slice | Proposed scope |
 |---|---|
 | P0 | Completed: AI and WhatsApp usage metering (section above). |

@@ -78,6 +78,45 @@ frontend/         Next.js admin dashboard (proxies /api via BACKEND_URL; no secr
   baselines with `--update-baseline` only for intended changes. Run `--provider openai_compat` when a key is set.
 - **Schema change:** edit models → `alembic revision --autogenerate -m "..."` → review → test from clean DB.
 
+## Production MVP Roadmap — Merchant Validation and Operational Readiness
+Objective: a merchant runs products, inventory, conversations and orders through WhatsApp and the dashboard, with
+safe automation, accurate commerce facts, and control over operations and costs. Detail, acceptance criteria and the
+risk register: `docs/ROADMAP.md`. History and evidence: `docs/MILESTONES.md`. Pilot checklist:
+`docs/EXTERNAL_VALIDATION.md`. Production-ready = evidence for all four questions: **Q1** a real merchant operates
+independently · **Q2** AI answers are accurate and safe (approved thresholds, native review, production model) ·
+**Q3** revenue per merchant exceeds real costs (no invented prices; unpriced ≠ free) · **Q4** safe under growth and
+failure (measured targets).
+
+Status (update with evidence; values: NOT STARTED · IN PROGRESS · LOCALLY VERIFIED · CI VERIFIED · EXTERNALLY
+VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `e1a18c2`.
+
+| Phase | Scope | Status |
+|---|---|---|
+| A | Baseline, risk register, existing guarantees kept | IN PROGRESS (register in `docs/ROADMAP.md` §6) |
+| B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | IN PROGRESS — B1 needs no decision; B2–B6 wait for decisions D1–D6 |
+| C | Usage/cost visibility: embedding metering, monthly aggregation, cost model, quotas, usage UI; billing last | NOT STARTED (P0 metering CI VERIFIED; no prices) |
+| D | Merchant operations and inventory reliability (audit, then gaps) | NOT STARTED (existing workflows CI VERIFIED) |
+| E | AI and multilingual validation | IN PROGRESS — offline/adversarial CI VERIFIED; real model LOCALLY VERIFIED (dev key); production model, thresholds, native review BLOCKED |
+| F | Production infrastructure and security | LOCALLY VERIFIED (rehearsal); host, domain, monitor, off-site backup BLOCKED |
+| G | External validation and supervised pilot | BLOCKED (Meta, LLM account, host, merchant, reviewers, legal) |
+| H | Go/no-go on Q1–Q4 | NOT STARTED |
+
+Release gates are separate and never interchangeable: CODE COMPLETE → LOCAL TESTS PASS → CI PASS → EXTERNAL
+INTEGRATION VERIFIED → PILOT ACCEPTED → PRODUCTION READY. A mock is not an integration; an offline eval is not
+production accuracy; CI is not recovery, Meta delivery, merchant usability, economics or multi-instance behaviour.
+
+Execution loop per milestone: inspect → plan the smallest testable change → review integrity/security/isolation/
+rollback risks → implement only that → focused tests, then the full suite, ruff, evals, `alembic check` as relevant →
+challenge the result (bypasses, misleading success replies) → document evidence and limits → small isolated commit →
+push after reviewing the diff → confirm CI on that commit → update the status above. Never claim a test passed
+without observing it; never weaken a test, grounding rule, security control or eval baseline to get green.
+
+Proceed without asking on routine, reversible, locally verifiable work. **Stop** for product decisions, destructive
+operations, external spend or new paid services, deployments, live or production data, and changes that materially
+alter merchant behaviour (ship those behind an off/observe/enforce switch). For an unavailable credential, merchant,
+reviewer or environment: finish the local work, write the exact validation checklist, mark the gate BLOCKED, and
+never fabricate external evidence.
+
 ## Conventions
 - Money is `Numeric(12,2)`/`Decimal`; floats only at the JSON boundary.
 - Structured JSON logs via `log_event`/`log_operation`; never log secrets (formatter redacts known keys).
