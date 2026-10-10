@@ -18,14 +18,15 @@ a running Docker stack or a passing mocked end-to-end test answer none of them o
 
 ## 2. Value proposition, and what exists today
 
-Verified against the code on 2026-10-10 (commit `e1a18c2`). "Exists" means implemented and covered by tests in CI;
-it does not mean validated with a real merchant, real WhatsApp traffic or the production model.
+Verified against the code on 2026-10-10 (commit `e1a18c2`; row C updated for P1 at `f3fa3e4`). "Exists" means
+implemented and covered by tests in CI; it does not mean validated with a real merchant, real WhatsApp traffic or
+the production model.
 
 | Area | Exists (CI-tested) | Known gaps |
 |---|---|---|
 | **A. Products and inventory** | Product CRUD and CSV import with per-row errors; deactivate; stock changes recorded in the `inventory` movement ledger (`ProductService.set_stock` / `adjust_stock`); stock rows locked `FOR UPDATE` in id order at checkout (`commerce_service.py`, ~l. 432); restock on cancellation (`_restock`); the AI gets prices and stock only from tools, and grounding rejects invented ones | No inventory-discrepancy / stock-count workflow beyond adjustments; unpaid orders never expire and release stock (README › Future work); search is unindexed beyond a few thousand products |
 | **B. Orders and customers** | Explicit YES to a delivered server summary (CLAUDE.md rule 7); status and payment state machines; manual payments with evidence; audit trail; owner notifications and reminders; human handoff and takeover; 24-hour window handling | No staff invitations/roles UI (single owner login); refunds and partial payments are manual |
-| **C. AI reliability** | Grounding check with deterministic fallback; adversarial eval gate in CI; per-turn caps (5 iterations, 8 tool calls, 45 s, 3 HTTP attempts) | Retry amplification and no tenant quota (`docs/P1_RUNAWAY_GUARD.md` F1–F3); real-provider eval only from a developer key; no native-speaker review |
+| **C. AI reliability** | Grounding check with deterministic fallback; adversarial eval gate in CI; per-turn caps (5 iterations, 8 tool calls, 45 s, 3 HTTP attempts); Runaway Conversation Guard (P1): a per-message budget across retries, enforced, and per-customer and per-tenant hour/day limits | Customer and tenant limits not chosen yet (observe mode); real-provider eval only from a developer key; no native-speaker review |
 | **D. System and business management** | Dashboard (inbox, orders, products, knowledge, settings, alerts, setup checklist); `/healthz`, `/readyz`, `/metrics`; scrubbed JSON logs; backup/restore scripts with a verified restore; usage ledger (AI + WhatsApp) | No usage/cost aggregation or merchant-facing usage view; no quotas or spend alerts; no platform admin console; multi-instance not validated |
 
 ## 3. The four acceptance questions
@@ -37,7 +38,7 @@ Every milestone must move at least one answer forward with evidence. Current sta
 | Q1 | Can a real merchant operate independently? | Onboarding path; product/inventory workflow; a real WhatsApp conversation; an end-to-end order; merchant visibility of orders, errors and actions; a supervised pilot where the merchant completes agreed tasks | Dashboard walk-through in a headless browser (CI); mocked WhatsApp E2E (CI); no real merchant, no real WhatsApp | BLOCKED (merchant, Meta) |
 | Q2 | Are AI answers accurate and safe enough? | Regression + adversarial eval; thresholds approved **before** the final run; zero fabricated payment/order/refund claims in critical cases; native review per pilot language; real-provider run with the production configuration | Offline + adversarial gate in CI; real model (`gpt-4o-mini`, developer key) 67/71 on suite v1.2.0 (`docs/VALIDATION_REPORT.md`); no approved thresholds; no native review | IN PROGRESS / BLOCKED (LLM account, reviewers) |
 | Q3 | Is the business economically viable? | Real usage and cost per merchant (AI calls, tokens, retries, embeddings; WhatsApp messages/templates; hosting, DB, backups, monitoring; support); revenue per merchant; margin, break-even, low/expected/high scenarios; the usage level where a merchant becomes unprofitable | Usage ledger records AI calls and WhatsApp traffic (Phase 4 P0); no prices loaded (all unpriced); embeddings not metered; no aggregation; no revenue model | NOT STARTED (needs prices, invoices, pricing decision) |
-| Q4 | Does the system stay safe under growth and failure? | Measured targets set first, then: multi-tenant concurrency, duplicate webhooks, provider failures and ambiguous outcomes, DB failures and lock contention, worker restarts, AI loops and usage spikes, inventory races, noisy neighbours, backup/restore, security, migration-failure recovery | Many failure paths tested in CI (durability, isolation, concurrency, DB limits, crash recovery live-tested locally); restore drill verified locally; **AI loops/usage spikes not bounded** (P1); no load test; multi-instance not validated | IN PROGRESS |
+| Q4 | Does the system stay safe under growth and failure? | Measured targets set first, then: multi-tenant concurrency, duplicate webhooks, provider failures and ambiguous outcomes, DB failures and lock contention, worker restarts, AI loops and usage spikes, inventory races, noisy neighbours, backup/restore, security, migration-failure recovery | Many failure paths tested in CI (durability, isolation, concurrency, DB limits, crash recovery live-tested locally); restore drill verified locally; AI loops bounded per message by default and per customer/tenant once limits are set (P1, CI-verified with mocked providers; limits not chosen); no load test; multi-instance not validated | IN PROGRESS |
 
 Unpriced usage is never treated as zero cost. A spreadsheet margin built on unverified prices does not answer Q3.
 
@@ -75,7 +76,8 @@ acceptance criteria (AC), verification, and external needs.
 - **B4 Enforce per-customer limits. B5 Enforce tenant limits.** AC: exact boundaries, racing workers, restart and
   second-instance tests; deterministic commerce paths unaffected.
 - **B6 (optional) Tenant fairness in the worker claim.**
-- Needs before B2: the six decisions in `docs/P1_RUNAWAY_GUARD.md` §10.
+- Needs before B2: the six decisions in `docs/P1_RUNAWAY_GUARD.md` §10 (approved 2026-10-10). B1–B5 are code
+  complete and CI-verified; choosing the customer and tenant limits needs observe-mode data (Phase G).
 
 ### Phase C — Usage and cost visibility (Phase 4 P2–P7)
 C1 embedding metering · C2 monthly usage aggregation (real vs simulated, unknown and unpriced kept distinct) ·

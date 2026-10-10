@@ -1,7 +1,9 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B5 implemented (§9); B6 (fairness)
-deferred (D5). Limits for customers and tenants are not chosen yet: they come from observe-mode data on the pilot.
+Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). CODE COMPLETE: B1–B5 implemented, tested
+and CI-verified (§9); B6 (fairness) deferred (D5). Not externally validated: limits for customers and tenants are
+not chosen yet (they come from observe-mode data on the pilot), and the guard has run only against scripted models
+and the OpenAI-compatible adapter over a mocked transport, never a real provider or real traffic.
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
 ## 1. Goal
@@ -182,8 +184,8 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
 - Not covered: other external calls inside tools (MoMo `request_payment`, not enabled) are bounded only by their own
   timeouts.
 
-**B2 — counters and observe mode** (migration `0011`, `app/services/ai_guard.py`, `tests/test_ai_guard.py`,
-`tests/test_migration_0011.py`):
+**B2 — counters and observe mode, CI VERIFIED** (`a3493d3`, run 38049855380; migration `0011`,
+`app/services/ai_guard.py`, `tests/test_ai_guard.py`, `tests/test_migration_0011.py`):
 - `ai_usage_counters` holds, per tenant, rows for `message` (subject = the webhook event id, period `lifetime`),
   `customer` and `tenant` (periods `hour`, `day`), with `calls`, `attempts`, `over_limit`, `denied`, `alerted_at`.
 - `AgentEngine._complete` reserves one call and its first attempt before every metered model call; the provider's
@@ -193,18 +195,20 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
   budget is the same row on every retry, lease reclaim and graceful-shutdown release.
 - Each reservation is its own transaction on its own connection, rows in a fixed order; it survives a rollback of
   the turn (tested) and loses no update under concurrent workers (tested with 8 threads).
-- Observe mode (the default for every scope) counts, increments `over_limit` and logs `ai_guard.decision`
-  `would_block` past a configured limit, and never refuses: replies and model calls are identical with the guard off
-  (tested). A counter-store failure is logged as `ai_guard.store_error` and the call goes ahead in observe mode.
+- Observe mode (the default for every scope at B2; the message scope enforces by default since B3) counts,
+  increments `over_limit` and logs `ai_guard.decision` `would_block` past a configured limit, and never refuses:
+  replies and model calls are identical with the guard off (tested). A counter-store failure is logged as `ai_guard.store_error` and the call goes ahead in observe mode.
 - Limits: per message, default = one processing attempt (1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, each up to
   `LLM_MAX_ATTEMPTS` attempts); per customer and tenant, unset (0) by default: counted only, to be chosen from
-  observe-mode data. `enforce` is refused at startup until the scope's enforcement step ships.
+  observe-mode data. `enforce` was refused at startup until the scope's enforcement step shipped (every scope
+  accepts it since B5).
 - Retention: hour buckets 2 days, day buckets 8 days, message rows `WEBHOOK_EVENT_RETENTION_DAYS`, in the existing
   hourly sweep (`ops.purge_ai_usage_counters`); the ledger is never purged. Metrics:
   `duka_ai_guard_reserved_current_hour`, `duka_ai_guard_busiest_tenant_calls_current_hour`,
   `duka_ai_guard_over_limit_24h`, `duka_ai_guard_denied_24h`.
 
-**B3 — per-message budget, enforced by default** (`tests/test_ai_guard_enforce.py`):
+**B3 — per-message budget, enforced by default, CI VERIFIED** (`d11de7d`, run 38052688314;
+`tests/test_ai_guard_enforce.py`):
 - `AI_GUARD_MESSAGE_MODE=enforce` is the default: one inbound message (its webhook event) may reserve, across all its
   processing retries, what one processing attempt may use (1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, each with
   up to `LLM_MAX_ATTEMPTS` HTTP attempts). The limit never stops a first attempt, only retries. Measured with the
@@ -232,7 +236,8 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
 - New customer texts `ai_limited` and `ask_person` exist in all six languages and wait for native review like the
   rest of `app/i18n.py`.
 
-**B4 — durable per-customer limits** (`tests/test_ai_guard_enforce.py`, section B4):
+**B4 — durable per-customer limits, CI VERIFIED** (`a12b72c`, run 38053475076; `tests/test_ai_guard_enforce.py`,
+section B4):
 - `AI_GUARD_CUSTOMER_MODE=enforce` plus `AI_GUARD_CUSTOMER_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` bound the model calls and
   provider attempts one customer can cause per UTC hour and day, across all their messages, workers, processes and
   instances: the counters are rows in PostgreSQL, so a restart or a second instance (where the in-memory 30
@@ -244,7 +249,8 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
 - A customer at their limit gets the limited reply (no AI call) while every other customer is served with their own
   allowance; one owner alert per tenant and hour or day.
 
-**B5 — tenant limits with operator overrides** (`tests/test_ai_guard_enforce.py`, section B5):
+**B5 — tenant limits with operator overrides, CI VERIFIED** (`f3fa3e4`, run 38054886424;
+`tests/test_ai_guard_enforce.py`, section B5):
 - `AI_GUARD_TENANT_MODE=enforce` plus `AI_GUARD_TENANT_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` bound what one shop can spend
   on the model per UTC hour and day, across all its customers, workers, processes and instances. Default `observe`
   with no limit, as for customers.

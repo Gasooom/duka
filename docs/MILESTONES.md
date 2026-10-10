@@ -1,7 +1,8 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-10 (adds production hardening phases 1–3, Render preparation and Phase 4 P0 usage metering;
-M3's key status reconciled with `docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a proposal).
+Last updated: 2026-10-10 (adds Phase 4 P1, the Runaway Conversation Guard, code complete; earlier the same day:
+production hardening phases 1–3, Render preparation and Phase 4 P0 usage metering; M3's key status reconciled with
+`docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a proposal).
 Previous update: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
@@ -530,6 +531,33 @@ Not validated: real Meta sends, signed webhooks and status webhooks have only be
 with M4); there is no real price list, so no cost has been computed; the calling-code table matches ITU's list as of
 15 December 2016; nothing has been deployed.
 
+### Phase 4 P1 — Runaway Conversation Guard · CODE COMPLETE (B1–B5, CI) · limits not chosen, real provider not validated
+
+Design, findings and the product owner's decisions D1–D6: `docs/P1_RUNAWAY_GUARD.md`. Each step was reviewed,
+tested locally and pushed on its own; each CI run below ran ruff, the full backend suite and both offline evals,
+with all 5 jobs green.
+
+| Step | Commit | CI run | Adds |
+|---|---|---|---|
+| B1 | `0ac995e` | `38043387589` (#8) | The turn deadline covers tools and embeddings requests; the facts already found are sent when time runs out; searches rank by words when embeddings are unavailable (`test_turn_deadline.py`) |
+| B2 | `a3493d3` | `38049855380` (#10) | `ai_usage_counters` (migration `0011`): model calls and provider attempts reserved before they are made, per message, customer and tenant; observe mode (`test_ai_guard.py`, `test_migration_0011.py`) |
+| B3 | `d11de7d` | `38052688314` (#11) | The per-message budget, enforced by default across processing retries (25 model calls for one failing message before, 6 after); limited reply, flagged conversation, one owner alert per window; fail closed (`test_ai_guard_enforce.py`) |
+| B4 | `a12b72c` | `38053475076` (#12) | Durable per-customer hour/day limits, enforced once configured |
+| B5 | `f3fa3e4` | `38054886424` (#13) | Tenant hour/day limits with operator overrides (`AI_GUARD_TENANT_OVERRIDES`) |
+
+At `f3fa3e4`: 712 backend tests pass locally; the offline evals pass 65/65 with both providers, prompt fingerprint
+unchanged.
+
+Not validated, or still open:
+- Customer and tenant limits are not chosen: they ship in observe mode with no limit and are to be set from
+  observe-mode data (`docs/EXTERNAL_VALIDATION.md` §5). Only the per-message budget enforces by default.
+- The guard has run only against scripted models and the OpenAI-compatible adapter over a mocked transport, never a
+  real provider or real traffic.
+- Migration `0011` is not applied to the development database (still at `0010`); nothing has been deployed.
+- The new customer texts `ai_limited` and `ask_person` await native review with the rest of `app/i18n.py`.
+- Tokens and money are not limited (D6; money needs prices, Phase C); fairness between tenants in the worker claim
+  (B6) is deferred (D5).
+
 ### Phase 4 — remaining slices · Proposed — awaiting product approval
 
 Recorded on 2026-10-10 as a proposed product plan. It is not a record of work done, none of these slices exists in
@@ -542,7 +570,7 @@ still needs its open product decisions approved before it is implemented.
 | Slice | Proposed scope |
 |---|---|
 | P0 | Completed: AI and WhatsApp usage metering (section above). |
-| P1 — Runaway conversation guard | Tenant-scoped limits that stop runaway agent loops and bound AI spend. Define safe defaults, explicit failure behaviour and tests before implementation. |
+| P1 — Runaway conversation guard | Code complete (section above). Proposed as: tenant-scoped limits that stop runaway agent loops and bound AI spend. Define safe defaults, explicit failure behaviour and tests before implementation. |
 | P2 — Embedding usage metering | Measure embedding usage per tenant and avoid double-counting. |
 | P3 — Monthly usage reporting | Aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
 | P4 — Tenant cost model | Known provider costs and a clearly documented infrastructure allocation per tenant. Never invent missing prices or present estimates as exact costs. |
