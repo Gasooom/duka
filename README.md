@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 506 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 640 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -221,7 +221,8 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 ```
 
 ## Verification status (honest)
-- ✅ 65 backend tests pass against PostgreSQL 16 + pgvector. Ruff is clean.
+- ✅ 640 backend tests pass against PostgreSQL 16 + pgvector (local run of the tree committed as `415b9b0`; CI runs
+  the suite on every push to `main`). Ruff is clean.
 - ✅ Migrations go up and down cleanly from an empty DB. `alembic check` reports the models are in sync.
 - ✅ The backend and the production Next.js build ran locally. Playwright drove the dashboard: login, the simulator
   flow, the debugger trace, simulating payment → paid, the CSV error report, and the mobile layout (no horizontal
@@ -253,11 +254,17 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 ## Future work (deliberately out of V1)
 - Staff invitations and roles UI. The `staff` role exists, but there's no invite flow yet. Forgotten passwords are
   reset by an operator: `python -m app.cli reset-password --email owner@shop.rw`.
-- Redis-backed rate limiting and a job queue when running more than one instance (today: in-process + BackgroundTasks).
+- A shared (e.g. Redis-backed) rate limiter before running more than one API instance: today's limiters are
+  in-process. Background work does not use `BackgroundTasks`: the webhook inbox and the outbox are PostgreSQL tables
+  that in-process worker threads claim with `FOR UPDATE SKIP LOCKED`. A multi-instance deployment has not been
+  validated.
 - Postgres row-level security as defence in depth on top of repository scoping.
 - WhatsApp interactive messages (lists/buttons, product images), template messages outside the 24h window, voice notes.
 - Per-tenant MoMo credentials (today they're platform-level env vars), more providers (Airtel Money, Flutterwave,
   Stripe), refunds.
 - Unpaid orders expiring and releasing stock, discounts/coupons, multi-language replies for the rules engine.
-- A platform super-admin console, billing, and usage metering per tenant (token counts are already recorded per run).
+- A platform super-admin console and billing. Per-tenant usage metering already exists: real AI calls and WhatsApp
+  traffic are recorded in `usage_events` (`docs/OPERATIONS.md` › Usage metering). Monthly usage reports, a tenant
+  cost model, quotas and spend alerts, a usage dashboard and billing are proposed Phase 4 slices awaiting product
+  approval (`docs/MILESTONES.md`).
 - Auth cookies (httpOnly) instead of localStorage for the dashboard token.

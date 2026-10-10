@@ -1,9 +1,9 @@
 # External validation runbook (pilot)
 
 These are the checks Duka still needs before, and during, a supervised one-merchant pilot. Everything that can run
-in the repository has been done. Phases 1–2 are verified in CI. Phase 3 is validated locally, and its CI run is
-still pending. What remains depends on credentials, a production host, or decisions only the merchant and operator
-can make. The list follows the Phase 3 audit's external-validation checklist.
+in the repository has been done. Phases 1–3 are verified in CI (GitHub Actions runs `37651903982`, `37679363561`
+and `37768899926`, every job green). What remains depends on credentials, a production host, or decisions only the
+merchant and operator can make. The list follows the Phase 3 audit's external-validation checklist.
 
 **What each tag means:**
 
@@ -20,10 +20,14 @@ not when the command has run.
 
 ## 1. Before credentials
 
-- [ ] **LOCAL — multilingual grounding.**
+- [x] **LOCAL — multilingual grounding.**
   - **Do:** in `backend/`, run `pytest tests/test_grounding_multilingual.py` and
     `python -m evals.run --provider adversarial`.
   - **Pass:** all tests pass; the eval shows 0 critical failures; the `grounding-rw/fr/sw-*` cases pass.
+  - **Result (2026-10-10, run by Claude Code for the engineer, on `415b9b0` against a disposable PostgreSQL):**
+    24 tests passed. Eval suite v1.3.0: 65 passed, 0 failed, 15 skipped (need a real LLM), 0 critical failures;
+    `grounding-rw-01..03`, `grounding-fr-01..03` and `grounding-sw-01..03` all pass. This proves the offline checks
+    only; the native-speaker review below is still required.
 - [ ] **DECISION — pilot languages.** Choose the languages the pilot serves. That choice decides which reviews in
   the next item are mandatory.
 - [ ] **DECISION — native-speaker review.**
@@ -39,9 +43,11 @@ not when the command has run.
   The difference that matters: on Render, every dashboard sign-in reaches the API through the dashboard. They
   therefore share one per-address limit of 20 sign-ins a minute; the per-account lock is unaffected
   (`docs/DEPLOYMENT.md` › R). Record the choice.
-- [ ] **LOCAL — rate-limit visibility.**
+- [x] **LOCAL — rate-limit visibility.**
   - **Do:** run `pytest tests/test_rate_limit_visibility.py`.
   - **Pass:** all tests pass.
+  - **Result (2026-10-10, run by Claude Code for the engineer, on `415b9b0` against a disposable PostgreSQL):**
+    7 tests passed.
   - **What it guarantees:** above 30 messages a minute from one customer, the extra messages are stored and
     marked but not answered automatically. The conversation is flagged, and the owner gets one
     `customer_rate_limited` alert per conversation per day.

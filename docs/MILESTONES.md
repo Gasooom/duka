@@ -1,6 +1,8 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
+Last updated: 2026-10-10 (adds production hardening phases 1–3, Render preparation and Phase 4 P0 usage metering;
+M3's key status reconciled with `docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a proposal).
+Previous update: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
 Legend: **COMPLETE** · **IN PROGRESS** · **BLOCKED** (needs an external dependency) · **NOT STARTED**
@@ -86,11 +88,18 @@ unique (registration is closed in production; login gives the same error for unk
 Remaining risks: isolation is enforced by repositories + DB triggers, not Postgres RLS (reads are not DB-enforced).
 Rate limits are per process.
 
-### M3 — Real AI · code COMPLETE · live verification BLOCKED (LLM credential)
+### M3 — Real AI · code COMPLETE · live verification BLOCKED (production LLM credential)
 
 Not COMPLETE until a real provider has been called successfully: run `python -m app.cli llm-check` with
 `LLM_PROVIDER=openai_compat`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` (exit 0 = the model called the tool).
-Today it reports `key=MISSING` / exit 2.
+At this audit (2026-10-04) it reported `key=MISSING` / exit 2.
+
+Reconciled 2026-10-10: during the engineering validation (2026-10-05/06) `llm-check` passed on a developer machine
+with a local key: `provider=openai_compat model=gpt-4o-mini key=set ok`, tool call `search_products`
+(`docs/VALIDATION_REPORT.md` §2, which also records the real-model eval and live scenarios). That proves the adapter
+against the real API; it is not the production credential. M3 stays BLOCKED until `llm-check` passes on the
+production host with the production account and a pinned, dated model, and the real-model evaluation in the pilot
+languages has been reviewed (`docs/EXTERNAL_VALIDATION.md` §3).
 
 Production LLM path (existing `openai_compat` adapter, works with OpenAI, Gemini, Groq, OpenRouter, DeepSeek):
 - **Time budget:** a whole turn is capped (`AGENT_TURN_TIMEOUT_SECONDS`, 45 s). Each HTTP attempt's timeout is
@@ -481,6 +490,62 @@ measures real model quality and the grounding false-positive rate; keep its repo
 - Verdict: READY WITH EXTERNAL DEPENDENCIES (WhatsApp number, server/domain, merchant, native-speaker review,
   privacy/legal review).
 
+### Render preparation · prepared, never deployed
+
+`6f439b9` (`feat(deploy): prepare FastAPI for Render`) added `render.yaml`; `2c482f8` changed it and `fb79e5d` added
+the `duka-dashboard` service. It has been checked locally against Render's published schema and has never been deployed
+(`docs/EXTERNAL_VALIDATION.md` §1, "where the dashboard runs"). No CI run exists for this commit: CI was added by the
+next one (`2c482f8`).
+
+### Production hardening phases 1–3 · COMPLETE (in-repo, green CI) · external validation outstanding
+
+| Phase | Commit | CI (GitHub Actions run, all jobs green) | Added, with the tests that prove it |
+|---|---|---|---|
+| 1 | `2c482f8` | `37651903982` (#1, 4 jobs) | CI itself (`.github/workflows/ci.yml`); security headers and the 10 MB body limit (`test_http_security.py`); login throttling (`test_login_throttle.py`); database statement, lock and idle-transaction timeouts (`test_db_limits.py`); model allow-list (`test_model_allowlist.py`); hostile uploads (`test_uploads.py`); audit of sensitive settings (`test_audit_events.py`); browser checks for double submits and an API outage (`scripts/ui-smoke/double_submit.js`, `outage.js`) |
+| 2 | `01445b5` | `37679363561` (#2, 5 jobs) | WhatsApp 24-hour window and late Meta failures (`test_whatsapp_window.py`); owner reminders for orders waiting for review or accepted but unpaid (`test_order_reminders.py`); the production-image CI job (runtime files only, Trivy gate on fixable critical vulnerabilities) |
+| 3 | `fb79e5d` | `37768899926` (#3, 5 jobs) | Kinyarwanda, French and Swahili order/payment/status/cart claims in the grounding check (`test_grounding_multilingual.py`, `docs/MULTILINGUAL_GROUNDING_REVIEW.md`); per-customer rate limit made visible to the owner (`test_rate_limit_visibility.py`); dashboard proxy test (`frontend/tests/proxy.test.mjs`); the pilot runbook `docs/EXTERNAL_VALIDATION.md` |
+
+The runbook's two LOCAL checks were run on 2026-10-10 against `415b9b0` and pass (recorded in
+`docs/EXTERNAL_VALIDATION.md` §1). Everything it tags META, LLM, HOST or DECISION is still open.
+
+### Phase 4 P0 — Usage metering · COMPLETE (code, CI, development database) · real WhatsApp traffic and real prices not validated
+
+One insert-only ledger, `usage_events` (`docs/OPERATIONS.md` › Usage metering):
+- **AI calls** — `2f77a51` (`feat(usage): add durable AI usage metering`), migration `0009`; CI run `37812248485`
+  (#4, 5 jobs green). One row per real model call, written in its own transaction so it survives a rolled-back turn;
+  UPDATE and DELETE are refused by a trigger; the only foreign key is to `businesses` (RESTRICT).
+- **WhatsApp traffic** — `415b9b0` (`feat(usage): meter WhatsApp traffic in the usage ledger (migration 0010)`),
+  migration `0010`; CI run `38033943478` (#5, 5 jobs green). Inbound customer messages (`wa_in`), each send attempt
+  to a customer (`wa_out`) or to the owner (`wa_alert`) under the outbox claim's attempt number, interrupted sends as
+  `unknown`, late Meta failures as a new row with `units` 0; `is_real`, `message_kind`, `template_name` and `market`
+  (a country calling code, never a phone number).
+- **Prices:** none are shipped. Costs come only from the operator's `USAGE_PRICING_FILE`; without it every event is
+  recorded unpriced.
+- **Tests:** `test_usage_metering.py`, `test_whatsapp_metering.py`, `test_migration_0010.py`; 640 backend tests
+  collected at `415b9b0`.
+- **Development database:** `commerce` migrated `0008 → 0009 → 0010` on 2026-10-10, after a fresh backup was verified
+  (checksum, and a restore whose row counts matched its manifest). `alembic check` is clean and the ledger is empty.
+
+Not validated: real Meta sends, signed webhooks and status webhooks have only been exercised against mocks (blocked
+with M4); there is no real price list, so no cost has been computed; the calling-code table matches ITU's list as of
+15 December 2016; nothing has been deployed.
+
+### Phase 4 — remaining slices · Proposed — awaiting product approval
+
+Recorded on 2026-10-10 as a proposed product plan. It is not a record of work done, none of these slices exists in
+the code, and the order may change when it is approved.
+
+| Slice | Proposed scope |
+|---|---|
+| P0 | Completed: AI and WhatsApp usage metering (section above). |
+| P1 — Runaway conversation guard | Tenant-scoped limits that stop runaway agent loops and bound AI spend. Define safe defaults, explicit failure behaviour and tests before implementation. |
+| P2 — Embedding usage metering | Measure embedding usage per tenant and avoid double-counting. |
+| P3 — Monthly usage reporting | Aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
+| P4 — Tenant cost model | Known provider costs and a clearly documented infrastructure allocation per tenant. Never invent missing prices or present estimates as exact costs. |
+| P5 — Quotas and spend alerts | Tenant-level thresholds and actionable alerts, built on validated usage and cost data. |
+| P6 — Dashboard usage UI | Monthly usage, known costs, unpriced usage, quotas and alerts, with strict tenant isolation. |
+| P7 — Billing | Deferred until usage, cost allocation, pricing and tenant isolation have been validated. |
+
 ### M11 — Real pilot (one Rwandan merchant) · NOT STARTED · BLOCKED on M2–M10 and a merchant
 
 ### M12 — Multi-store validation (2–5 stores) · NOT STARTED · BLOCKED on M11
@@ -489,7 +554,7 @@ measures real model quality and the grounding false-positive rate; keep its repo
 
 | Item | State |
 |---|---|
-| Real LLM works | 🟡 production path + safety built (M3); BLOCKED until `app.cli llm-check` succeeds with a real key |
+| Real LLM works | 🟡 production path + safety built (M3); `app.cli llm-check` passed with a developer's local key (`docs/VALIDATION_REPORT.md` §2); BLOCKED until it passes with the production account on the production host |
 | Real WhatsApp works / real webhook works | ❌ never connected (Meta setup) |
 | Tenant isolation is proven | ✅ M2 (API, tools, webhooks, DB triggers, concurrency) |
 | Real products/prices are used | ✅ from DB (no real merchant catalog yet) |
