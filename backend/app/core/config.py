@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _ai_guard_settings(self) -> "Settings":
         # Enforcement is added scope by scope (docs/P1_RUNAWAY_GUARD.md, B3-B5).
-        allowed = {"message": {"off", "observe", "enforce"}, "customer": {"off", "observe"},
+        allowed = {"message": {"off", "observe", "enforce"}, "customer": {"off", "observe", "enforce"},
                    "tenant": {"off", "observe"}}
         for scope, modes in allowed.items():
             name = f"ai_guard_{scope}_mode"

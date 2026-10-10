@@ -120,7 +120,7 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 |---|---|---|---|
 | A failing turn repeats its model calls on every retry (up to 25 calls for one message, no reply) | High → mitigated | F1, probe 2; B3 enforces the per-message budget by default (6 calls in the same probe) | B3 done |
 | No tenant ceiling on model calls/tokens | High | F2, probe 3 | Tenant limits (B5), then quotas (C4) |
-| Per-customer limit is in-process only | Medium | F3, `app/core/ratelimit.py` | Durable per-customer limit (B4); shared limiter before multi-instance (F) |
+| Per-customer limit is in-process only | Medium → mitigated once limits are set | F3; B4 adds durable per-customer AI limits in PostgreSQL (enforced when configured) | B4 done; the 30 messages/minute inbound limiter stays per process: shared limiter before multi-instance (F) |
 | Tool and embedding time not covered by the turn deadline | Medium → mitigated | F4, probe 4; fixed by B1 (`tests/test_turn_deadline.py`) | B1 done; other tool-side external calls (MoMo, not enabled) only have their own timeouts |
 | No real WhatsApp traffic ever processed; metering's real paths unproven | High (for go-live) | `docs/MILESTONES.md` M4 | G |
 | Production LLM not validated; no approved accuracy thresholds; no native review | High (for go-live) | M3, M10, Q2 | E, G |

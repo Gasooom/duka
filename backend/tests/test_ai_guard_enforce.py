@@ -7,6 +7,7 @@ Deterministic commerce paths (the YES that places an order, talking to a person,
 the guard. If the counters cannot be trusted, an enforcing scope refuses (fail closed, D1)."""
 import threading
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -367,3 +368,104 @@ def test_reserved_before_known_an_unanswered_attempt_still_counts(fashion, outbo
     fashion.send("black sneakers please")
     assert len(sent) == 1 and by_scope(counters(scope="message"))[("message", "lifetime")] == (1, 1)
     assert last_run().status == "limited"
+
+
+# ---------------------------------------------------------------- B4: per customer, durable
+@pytest.fixture
+def per_customer(monkeypatch):
+    """Enforce per-customer limits (calls per UTC hour / day); attempts left unlimited unless given."""
+    def install(per_hour: int = 0, per_day: int = 0, attempts_per_hour: int = 0):
+        monkeypatch.setattr(settings, "ai_guard_customer_mode", "enforce")
+        monkeypatch.setattr(settings, "ai_guard_customer_calls_per_hour", per_hour)
+        monkeypatch.setattr(settings, "ai_guard_customer_calls_per_day", per_day)
+        monkeypatch.setattr(settings, "ai_guard_customer_attempts_per_hour", attempts_per_hour)
+    return install
+
+
+def test_a_customer_gets_exactly_n_calls_an_hour(fashion, per_customer):
+    per_customer(per_hour=3)
+    bid, alice, bob = uuid.UUID(fashion.business_id), uuid.uuid4(), uuid.uuid4()
+    for _ in range(3):
+        AIGuard(engine, bid, customer_id=alice).reserve_call()
+    with pytest.raises(AIGuardDenied) as refused:
+        AIGuard(engine, bid, customer_id=alice).reserve_call()  # a new guard: as another worker or process would
+    assert (refused.value.scope, refused.value.period, refused.value.reason) == ("customer", "hour", "calls")
+    AIGuard(engine, bid, customer_id=bob).reserve_call()  # another customer of the same shop is not affected
+    rows = {r.subject_id: r for r in counters(scope="customer", period="hour")}
+    assert (rows[alice].calls, rows[alice].denied, rows[bob].calls) == (3, 1, 1)
+
+
+def test_the_hourly_limit_resets_each_utc_hour_and_the_daily_limit_does_not(fashion, per_customer):
+    per_customer(per_hour=2, per_day=3)
+    guard = AIGuard(engine, uuid.UUID(fashion.business_id), customer_id=uuid.uuid4())
+    utc = timezone.utc
+    guard.reserve_call(at=datetime(2026, 3, 1, 10, 0, tzinfo=utc))
+    guard.reserve_call(at=datetime(2026, 3, 1, 10, 20, tzinfo=utc))
+    with pytest.raises(AIGuardDenied, match="customer hour"):
+        guard.reserve_call(at=datetime(2026, 3, 1, 10, 59, 59, tzinfo=utc))
+    guard.reserve_call(at=datetime(2026, 3, 1, 11, 0, tzinfo=utc))  # a new UTC hour
+    with pytest.raises(AIGuardDenied, match="customer day"):
+        guard.reserve_call(at=datetime(2026, 3, 1, 11, 1, tzinfo=utc))  # but the day's three are used
+    guard.reserve_call(at=datetime(2026, 3, 2, 0, 0, tzinfo=utc))  # a new UTC day
+
+
+def test_racing_turns_of_one_customer_never_pass_the_limit(fashion, per_customer):
+    per_customer(per_hour=4)
+    bid, customer = uuid.UUID(fashion.business_id), uuid.uuid4()
+    granted, barrier = [], threading.Barrier(8)
+
+    def work():
+        guard = AIGuard(engine, bid, customer_id=customer, event_id=uuid.uuid4())  # eight different messages
+        barrier.wait()
+        try:
+            guard.reserve_call()
+            granted.append(1)
+        except AIGuardDenied:
+            pass
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(60)
+    [row] = counters(scope="customer", period="hour")
+    assert len(granted) == row.calls == 4 and row.denied == 4
+    assert sum(r.calls for r in counters(scope="message")) == 4  # refused reservations left nothing behind
+
+
+def test_a_busy_customer_is_stopped_and_the_others_are_served(fashion, outbox, per_customer):
+    from app.core.ratelimit import inbound_message_limiter
+    per_customer(per_hour=5)  # exactly one runaway turn's worth per customer and hour
+    model = Looping()
+    set_provider_override(model)
+    busy, other = "250788000031", "250788000032"
+    fashion.send("black sneakers please", from_number=busy)  # five calls: the customer's whole hour
+    assert model.calls == 5 and last_run().status != "limited"
+    fashion.send("and jackets?", from_number=busy)
+    assert model.calls == 5 and last_run().status == "limited" and replies(outbox, busy)[-1] == LIMITED
+    inbound_message_limiter.reset()  # a restart, or another instance: the in-memory limiter forgets...
+    fashion.send("and hoodies?", from_number=busy)
+    assert model.calls == 5 and replies(outbox, busy)[-1] == LIMITED  # ...the guard does not
+    fashion.send("black sneakers please", from_number=other)
+    assert model.calls == 5 + 5 and last_run().status != "limited"  # the other customer has their own five
+    assert conversation(busy).needs_attention and not conversation(other).needs_attention
+    [alert] = alerts()  # one alert for the hour
+    assert "a customer reached the assistant's usage limit for this hour" in alert.body
+
+
+def test_a_customer_limit_on_attempts_stops_provider_retries(fashion, outbox, monkeypatch, per_customer):
+    per_customer(attempts_per_hour=2)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    sent = []
+
+    def busy(req):
+        sent.append(req)
+        return httpx.Response(503, text="overloaded")
+
+    set_provider_override(openai_provider(busy, max_attempts=3))
+    fashion.send("black sneakers please")
+    assert len(sent) == 2 and last_run().status == "limited" and "customer hour attempts" in last_run().error
+
+
+def test_customer_enforcement_is_available():
+    assert Settings(ai_guard_customer_mode="enforce").ai_guard_customer_mode == "enforce"

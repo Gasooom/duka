@@ -1,6 +1,6 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B3 implemented (§9); B4–B5 in
+Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B4 implemented (§9); B5 in
 progress; B6 (fairness) deferred (D5).
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
@@ -231,6 +231,18 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
   a fresh budget, as it gets fresh attempts.
 - New customer texts `ai_limited` and `ask_person` exist in all six languages and wait for native review like the
   rest of `app/i18n.py`.
+
+**B4 — durable per-customer limits** (`tests/test_ai_guard_enforce.py`, section B4):
+- `AI_GUARD_CUSTOMER_MODE=enforce` plus `AI_GUARD_CUSTOMER_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` bound the model calls and
+  provider attempts one customer can cause per UTC hour and day, across all their messages, workers, processes and
+  instances: the counters are rows in PostgreSQL, so a restart or a second instance (where the in-memory 30
+  messages/minute limiter starts empty) changes nothing (tested). The default stays `observe` with no limit: limits
+  are chosen from observe-mode data, then enforced.
+- Exactly N calls per customer and hour, then a refusal (tested, also with 8 racing turns of one customer: exactly
+  N granted, the refused reservations leave nothing behind); the hourly bucket resets on the UTC hour while the daily
+  one keeps counting (tested with explicit times); an attempts limit stops provider retries like the message budget.
+- A customer at their limit gets the limited reply (no AI call) while every other customer is served with their own
+  allowance; one owner alert per tenant and hour or day.
 
 ## 10. Decisions (approved by the product owner, 2026-10-10)
 
