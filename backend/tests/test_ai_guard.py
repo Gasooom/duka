@@ -287,7 +287,7 @@ def test_metrics_show_reservations_and_over_limit(fashion, outbox, db, monkeypat
 
 
 # ---------------------------------------------------------------- configuration
-@pytest.mark.parametrize("bad", [{"ai_guard_tenant_mode": "enforce"}, {"ai_guard_message_mode": "on"},
+@pytest.mark.parametrize("bad", [{"ai_guard_tenant_mode": "strict"}, {"ai_guard_message_mode": "on"},
                                  {"ai_guard_tenant_calls_per_hour": -1}])
 def test_invalid_guard_settings_are_refused(bad):
     with pytest.raises(ValidationError):

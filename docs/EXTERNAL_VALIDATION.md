@@ -159,6 +159,14 @@ Use a test number and test phones first, on staging or before the merchant goes 
 
 ## 5. Before the first merchant
 
+- [ ] **HOST + DECISION — AI usage limits.** The per-message budget enforces by default; customer and tenant
+  limits do not exist until they are chosen.
+  - **Do:** with real traffic in observe mode (a staging run or the first supervised days), read the busiest
+    customer-hours and tenant-hours (`docs/OPERATIONS.md` › Runaway Conversation Guard), set
+    `AI_GUARD_CUSTOMER_*` and `AI_GUARD_TENANT_*` above those peaks with a margin the owner approves, then switch
+    `AI_GUARD_CUSTOMER_MODE` and `AI_GUARD_TENANT_MODE` to `enforce`.
+  - **Pass:** the limits and the data they came from are recorded here; `duka_ai_guard_over_limit_24h` was 0
+    for normal traffic before switching.
 - [ ] **HOST — onboarding.** Run `python -m app.cli create-business --name "…" --email …`. It prints a generated
   password once. Public registration stays closed.
 - [ ] **DECISION — setup checklist.** The dashboard home shows these checks; every one must be green:
@@ -197,6 +205,9 @@ Every day:
 - [ ] **HOST — dead letters.** `dead_letters_24h` and `webhook.dead` logs. Fix the cause first, then run
   `python -m app.cli requeue-dead`.
 - [ ] **HOST + LLM — agent errors.** `agent_errors_1h` and `agent.error` logs. If errors persist, run `llm-check`.
+- [ ] **HOST — AI guard.** `assistant_limited` alerts, `duka_ai_guard_denied_24h` and
+  `duka_ai_guard_over_limit_24h`. A refusal means a message, a customer or the shop used its AI allowance: reply
+  to the flagged conversations; repeated refusals for normal traffic mean a limit is too low.
 
 Every week, and after any prompt or model change:
 

@@ -5,9 +5,10 @@ attempt ends the turn as `limited`: the customer gets the facts the tools alread
 nothing and offers a person, the conversation is flagged, the owner is alerted at most once per tenant and window.
 Deterministic commerce paths (the YES that places an order, talking to a person, owner order updates) never depend on
 the guard. If the counters cannot be trusted, an enforcing scope refuses (fail closed, D1)."""
+import json
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -469,3 +470,127 @@ def test_a_customer_limit_on_attempts_stops_provider_retries(fashion, outbox, mo
 
 def test_customer_enforcement_is_available():
     assert Settings(ai_guard_customer_mode="enforce").ai_guard_customer_mode == "enforce"
+
+
+# ---------------------------------------------------------------- B5: per tenant, with operator overrides
+@pytest.fixture
+def per_tenant(monkeypatch):
+    """Enforce tenant limits (calls per UTC hour / day, attempts per hour) and optional operator overrides."""
+    def install(per_hour: int = 0, per_day: int = 0, attempts_per_hour: int = 0, overrides: dict | None = None):
+        monkeypatch.setattr(settings, "ai_guard_tenant_mode", "enforce")
+        monkeypatch.setattr(settings, "ai_guard_tenant_calls_per_hour", per_hour)
+        monkeypatch.setattr(settings, "ai_guard_tenant_calls_per_day", per_day)
+        monkeypatch.setattr(settings, "ai_guard_tenant_attempts_per_hour", attempts_per_hour)
+        monkeypatch.setattr(settings, "ai_guard_tenant_overrides",
+                            Settings(ai_guard_tenant_overrides=json.dumps(overrides or {})).ai_guard_tenant_overrides)
+    return install
+
+
+def test_a_tenant_gets_exactly_n_calls_an_hour_across_its_customers(fashion, electronics, per_tenant):
+    per_tenant(per_hour=3)
+    shop, other_shop = uuid.UUID(fashion.business_id), uuid.UUID(electronics.business_id)
+    for _ in range(3):
+        AIGuard(engine, shop, customer_id=uuid.uuid4()).reserve_call()  # three different customers
+    with pytest.raises(AIGuardDenied) as refused:
+        AIGuard(engine, shop, customer_id=uuid.uuid4()).reserve_call()
+    assert (refused.value.scope, refused.value.period, refused.value.reason) == ("tenant", "hour", "calls")
+    AIGuard(engine, other_shop, customer_id=uuid.uuid4()).reserve_call()  # another shop is not affected
+    tenant = {r.business_id: (r.calls, r.denied) for r in counters(scope="tenant", period="hour")}
+    assert tenant == {shop: (3, 1), other_shop: (1, 0)}
+
+
+def test_racing_workers_of_two_shops_never_pass_either_quota(fashion, electronics, per_tenant):
+    per_tenant(per_hour=5)
+    shop, other_shop = uuid.UUID(fashion.business_id), uuid.UUID(electronics.business_id)
+    granted: dict[uuid.UUID, int] = {shop: 0, other_shop: 0}
+    lock, barrier = threading.Lock(), threading.Barrier(12)
+
+    def work(business_id):
+        guard = AIGuard(engine, business_id, customer_id=uuid.uuid4(), event_id=uuid.uuid4())
+        barrier.wait()
+        try:
+            guard.reserve_call()
+            with lock:
+                granted[business_id] += 1
+        except AIGuardDenied:
+            pass
+
+    threads = [threading.Thread(target=work, args=(shop,)) for _ in range(8)] + \
+              [threading.Thread(target=work, args=(other_shop,)) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(60)
+    assert granted == {shop: 5, other_shop: 4}  # exactly the quota, and the other shop never pays for it
+    tenant = {r.business_id: (r.calls, r.denied) for r in counters(scope="tenant", period="hour")}
+    assert tenant == {shop: (5, 3), other_shop: (4, 0)}
+
+
+def test_a_shop_at_its_quota_answers_safely_and_alerts_once(fashion, outbox, per_tenant):
+    per_tenant(per_hour=6)
+    model = Looping()
+    set_provider_override(model)
+    fashion.send("black sneakers please", from_number="250788000041")  # 5 calls: within the quota
+    fashion.send("black sneakers please", from_number="250788000042")  # 1 call, then the quota is reached
+    assert model.calls == 6 and last_run().status == "limited"
+    assert replies(outbox, "250788000042")[-1].startswith("Here's what I found")  # the facts it had found
+    fashion.send("and jackets?", from_number="250788000043")
+    assert model.calls == 6 and replies(outbox, "250788000043")[-1] == LIMITED
+    [alert] = alerts()
+    assert "your shop reached its assistant usage limit for this hour (UTC)" in alert.body
+
+
+def test_the_daily_quota_has_its_own_window_and_alert(fashion, outbox, per_tenant):
+    per_tenant(per_day=2)
+    set_provider_override(Looping())
+    fashion.send("black sneakers please")
+    [alert] = alerts()
+    assert "for this day (UTC)" in alert.body
+    guard = AIGuard(engine, uuid.UUID(fashion.business_id))
+    with pytest.raises(AIGuardDenied, match="tenant day"):
+        guard.reserve_call()
+    guard.reserve_call(at=datetime.now(timezone.utc) + timedelta(days=1))  # tomorrow's bucket is fresh
+
+
+def test_an_operator_override_changes_one_shop_only(fashion, electronics, per_tenant):
+    shop, other_shop = uuid.UUID(fashion.business_id), uuid.UUID(electronics.business_id)
+    per_tenant(per_hour=2, overrides={str(shop): {"calls_per_hour": 4}})
+    for business_id, quota in ((shop, 4), (other_shop, 2)):
+        guard = AIGuard(engine, business_id)
+        for _ in range(quota):
+            guard.reserve_call()
+        with pytest.raises(AIGuardDenied):
+            guard.reserve_call()
+
+
+def test_an_override_of_zero_lifts_the_limit_for_that_shop(fashion, per_tenant):
+    shop = uuid.UUID(fashion.business_id)
+    per_tenant(per_hour=2, overrides={str(shop): {"calls_per_hour": 0}})
+    guard = AIGuard(engine, shop)
+    for _ in range(6):
+        guard.reserve_call()
+    assert counters(scope="tenant", period="hour")[0].calls == 6
+
+
+@pytest.mark.parametrize("bad", ["not json", "[1, 2]", '{"not-a-uuid": {"calls_per_hour": 1}}',
+                                 '{"%s": {"calls_per_minute": 1}}', '{"%s": {"calls_per_hour": -1}}',
+                                 '{"%s": {"calls_per_hour": true}}', '{"%s": {"calls_per_hour": 1.5}}', '{"%s": {}}'])
+def test_an_invalid_override_stops_the_start(bad):
+    with pytest.raises(Exception, match="ai_guard_tenant_overrides"):
+        Settings(ai_guard_tenant_overrides=bad.replace("%s", str(uuid.uuid4())))
+
+
+def test_switching_tenant_enforcement_back_to_observe(fashion, per_tenant, monkeypatch):
+    per_tenant(per_hour=1)
+    guard = AIGuard(engine, uuid.UUID(fashion.business_id))
+    guard.reserve_call()
+    with pytest.raises(AIGuardDenied):
+        guard.reserve_call()
+    monkeypatch.setattr(settings, "ai_guard_tenant_mode", "observe")  # the rollback switch
+    guard.reserve_call()
+    [row] = counters(scope="tenant", period="hour")
+    assert (row.calls, row.denied, row.over_limit) == (2, 1, 1)  # history kept; the observed overrun counted
+
+
+def test_tenant_enforcement_is_available():
+    assert Settings(ai_guard_tenant_mode="enforce").ai_guard_tenant_mode == "enforce"

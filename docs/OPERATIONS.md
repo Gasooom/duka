@@ -148,7 +148,8 @@ in `usage_events`.
 |---|---|---|
 | `AI_GUARD_MESSAGE_MODE` | `enforce` | the per-message budget: `off` = not counted; `observe` = counted, a reservation past the limit logged (`ai_guard.decision`, `would_block`) but never refused; `enforce` = refused |
 | `AI_GUARD_CUSTOMER_MODE` | `observe` | per-customer limits: switch to `enforce` once limits are chosen |
-| `AI_GUARD_TENANT_MODE` | `observe` | per-tenant limits (`enforce` ships with P1 B5) |
+| `AI_GUARD_TENANT_MODE` | `observe` | per-tenant limits: switch to `enforce` once limits are chosen |
+| `AI_GUARD_TENANT_OVERRIDES` | empty | operator-set per-shop limits, JSON: `{"<business id>": {"calls_per_hour": N, "calls_per_day": N, "attempts_per_hour": N, "attempts_per_day": N}}`; a key left out keeps the default, 0 lifts that limit for the shop; an invalid value stops the start; change it and restart |
 | `AI_GUARD_MESSAGE_CALLS`, `AI_GUARD_MESSAGE_ATTEMPTS` | `0` = one processing attempt | model calls / HTTP attempts one inbound message may use across all its retries (default: 1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, × `LLM_MAX_ATTEMPTS`) |
 | `AI_GUARD_{CUSTOMER,TENANT}_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` | `0` = no limit | per customer / per tenant and UTC hour / day. Choose them from observe-mode data (below), never by guess |
 

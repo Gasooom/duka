@@ -1,7 +1,7 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B4 implemented (§9); B5 in
-progress; B6 (fairness) deferred (D5).
+Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B5 implemented (§9); B6 (fairness)
+deferred (D5). Limits for customers and tenants are not chosen yet: they come from observe-mode data on the pilot.
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
 ## 1. Goal
@@ -243,6 +243,22 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
   one keeps counting (tested with explicit times); an attempts limit stops provider retries like the message budget.
 - A customer at their limit gets the limited reply (no AI call) while every other customer is served with their own
   allowance; one owner alert per tenant and hour or day.
+
+**B5 — tenant limits with operator overrides** (`tests/test_ai_guard_enforce.py`, section B5):
+- `AI_GUARD_TENANT_MODE=enforce` plus `AI_GUARD_TENANT_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` bound what one shop can spend
+  on the model per UTC hour and day, across all its customers, workers, processes and instances. Default `observe`
+  with no limit, as for customers.
+- Per-tenant overrides (decision D3): `AI_GUARD_TENANT_OVERRIDES`, an operator-set JSON object
+  `{"<business id>": {"calls_per_hour": N, "calls_per_day": N, "attempts_per_hour": N, "attempts_per_day": N}}`.
+  A key left out keeps the default; 0 lifts that limit for that shop. It is validated when the settings load
+  (unknown limit names, non-integers, negatives, booleans, empty objects and non-UUID keys stop the start), lives
+  in the environment like every other limit, needs a restart to change, and is not reachable from the dashboard.
+- Tested: exactly N calls per tenant and hour across different customers, then a refusal; 12 racing workers of two
+  shops get exactly each shop's quota and never the other's; a shop at its quota answers with the facts already
+  found or the limited reply and alerts once (hour), a daily quota alerts in its own window and tomorrow's bucket is
+  fresh; an override changes one shop only, an override of 0 lifts the limit; switching back to observe keeps the
+  history and counts the overrun.
+- Tokens are not limited (decision D6, §10); money is not limited without prices (Phase C).
 
 ## 10. Decisions (approved by the product owner, 2026-10-10)
 

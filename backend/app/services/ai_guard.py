@@ -62,9 +62,12 @@ class Bucket:
         return self.mode == "enforce" and bool(self.calls_limit or self.attempts_limit)
 
 
-def _limits(scope: str, period: str) -> tuple[int, int]:
+def _limits(scope: str, period: str, business_id: uuid.UUID) -> tuple[int, int]:
     if scope == "message":
         return settings.ai_guard_message_limits
+    if scope == "tenant":  # the operator may override them per tenant (AI_GUARD_TENANT_OVERRIDES)
+        return (settings.ai_guard_tenant_limit(business_id, "calls", period),
+                settings.ai_guard_tenant_limit(business_id, "attempts", period))
     return (getattr(settings, f"ai_guard_{scope}_calls_per_{period}"),
             getattr(settings, f"ai_guard_{scope}_attempts_per_{period}"))
 
@@ -91,7 +94,8 @@ class AIGuard:
             mode = getattr(settings, f"ai_guard_{scope}_mode")
             if mode == "off" or subject is None:
                 continue
-            out += [Bucket(scope, subject, period, mode, *_limits(scope, period)) for period in periods]
+            out += [Bucket(scope, subject, period, mode, *_limits(scope, period, self.business_id))
+                    for period in periods]
         return out
 
     def reserve_call(self, *, at: datetime | None = None) -> None:

@@ -93,7 +93,7 @@ VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `0ac995e`.
 | Phase | Scope | Status |
 |---|---|---|
 | A | Baseline, risk register, existing guarantees kept | IN PROGRESS (register in `docs/ROADMAP.md` §6) |
-| B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | IN PROGRESS — decisions D1–D6 approved; B1 CI VERIFIED (`0ac995e`); B2 CI VERIFIED (`a3493d3`); B3 (per-message budget, enforced by default) CI VERIFIED (`d11de7d`); B4 (per-customer limits) LOCALLY VERIFIED; B5 next; B6 deferred (D5) |
+| B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | IN PROGRESS — decisions D1–D6 approved; B1 CI VERIFIED (`0ac995e`); B2 CI VERIFIED (`a3493d3`); B3 (per-message budget, enforced by default) CI VERIFIED (`d11de7d`); B4 (per-customer limits) CI VERIFIED (`a12b72c`); B5 (tenant limits, operator overrides) LOCALLY VERIFIED; B6 deferred (D5) |
 | C | Usage/cost visibility: embedding metering, monthly aggregation, cost model, quotas, usage UI; billing last | NOT STARTED (P0 metering CI VERIFIED; no prices) |
 | D | Merchant operations and inventory reliability (audit, then gaps) | NOT STARTED (existing workflows CI VERIFIED) |
 | E | AI and multilingual validation | IN PROGRESS — offline/adversarial CI VERIFIED; real model LOCALLY VERIFIED (dev key); production model, thresholds, native review BLOCKED |

@@ -1,8 +1,18 @@
 """Application configuration. All secrets come from environment variables."""
+import json
+import uuid
 from functools import lru_cache
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+TENANT_LIMIT_NAMES = ("calls_per_hour", "calls_per_day", "attempts_per_hour", "attempts_per_day")
+
+
+@lru_cache(maxsize=8)
+def _tenant_overrides(raw: str) -> dict[str, dict[str, int]]:
+    """AI_GUARD_TENANT_OVERRIDES parsed once per value (it is validated when the settings load)."""
+    return json.loads(raw) if raw else {}
 
 
 class Settings(BaseSettings):
@@ -81,6 +91,10 @@ class Settings(BaseSettings):
     ai_guard_tenant_calls_per_day: int = 0
     ai_guard_tenant_attempts_per_hour: int = 0
     ai_guard_tenant_attempts_per_day: int = 0
+    # Operator-set per-tenant overrides of the four tenant limits (decision D3: no dashboard control), as JSON:
+    #   {"<business id>": {"calls_per_hour": N, "calls_per_day": N, "attempts_per_hour": N, "attempts_per_day": N}}
+    # A key left out keeps the default above; 0 = no limit for that tenant. Read at startup; an invalid value stops it.
+    ai_guard_tenant_overrides: str = ""
 
     # Usage metering: path of the operator's price list (JSON, format in app/services/pricing.py). Duka ships no
     # prices; without it every AI model call is still recorded in usage_events, unpriced.
@@ -182,7 +196,7 @@ class Settings(BaseSettings):
     def _ai_guard_settings(self) -> "Settings":
         # Enforcement is added scope by scope (docs/P1_RUNAWAY_GUARD.md, B3-B5).
         allowed = {"message": {"off", "observe", "enforce"}, "customer": {"off", "observe", "enforce"},
-                   "tenant": {"off", "observe"}}
+                   "tenant": {"off", "observe", "enforce"}}
         for scope, modes in allowed.items():
             name = f"ai_guard_{scope}_mode"
             if getattr(self, name) not in modes:
@@ -191,6 +205,41 @@ class Settings(BaseSettings):
             if name.startswith("ai_guard_") and isinstance(value, int) and value < 0:
                 raise ValueError(f"{name.upper()} must be 0 (default / no limit) or a positive number")
         return self
+
+    @field_validator("ai_guard_tenant_overrides")
+    @classmethod
+    def _tenant_overrides_valid(cls, v: str) -> str:
+        """Refuse anything but {business id: {limit name: whole number >= 0}}; returns it in canonical form."""
+        if not v.strip():
+            return ""
+        try:
+            raw = json.loads(v)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI_GUARD_TENANT_OVERRIDES is not valid JSON ({exc})") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("AI_GUARD_TENANT_OVERRIDES must be a JSON object keyed by business id")
+        clean: dict[str, dict[str, int]] = {}
+        for key, limits in raw.items():
+            try:
+                business_id = str(uuid.UUID(str(key)))
+            except ValueError as exc:
+                raise ValueError(f"AI_GUARD_TENANT_OVERRIDES: {key!r} is not a business id") from exc
+            if not isinstance(limits, dict) or not limits:
+                raise ValueError(f"AI_GUARD_TENANT_OVERRIDES[{key}] must be an object of limits")
+            for name, value in limits.items():
+                if name not in TENANT_LIMIT_NAMES:
+                    raise ValueError(f"AI_GUARD_TENANT_OVERRIDES[{key}]: unknown limit {name!r} "
+                                     f"(allowed: {', '.join(TENANT_LIMIT_NAMES)})")
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f"AI_GUARD_TENANT_OVERRIDES[{key}].{name} must be a whole number >= 0")
+            clean[business_id] = dict(limits)
+        return json.dumps(clean, sort_keys=True)
+
+    def ai_guard_tenant_limit(self, business_id: uuid.UUID, unit: str, period: str) -> int:
+        """The tenant limit for `unit` (calls | attempts) per `period` (hour | day): the operator's override for this
+        business if it has one, else the default. 0 = no limit."""
+        override = _tenant_overrides(self.ai_guard_tenant_overrides).get(str(business_id), {})
+        return override.get(f"{unit}_per_{period}", getattr(self, f"ai_guard_tenant_{unit}_per_{period}"))
 
     @property
     def ai_guard_message_limits(self) -> tuple[int, int]:
