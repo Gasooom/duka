@@ -23,6 +23,7 @@ from app.integrations.whatsapp.adapters import META_WINDOW_ERROR, OUTSIDE_WINDOW
 from app.models import Conversation, Message, Notification, WhatsAppAccount
 from app.repositories.repos import ConversationRepo, NotificationRepo, SettingsRepo, WhatsAppAccountRepo
 from app.services.conversation_service import ConversationService
+from app.services.usage_service import WA_ALERT, WA_OUT, record_wa_late_failure, record_wa_send
 
 logger = get_logger(__name__)
 OUTBOX_KEY = "duka_outbox"
@@ -95,8 +96,21 @@ def _active_account(db: Session, business_id: uuid.UUID) -> WhatsAppAccount | No
     return WhatsAppAccountRepo(db, business_id).first(WhatsAppAccount.is_active.is_(True))
 
 
+@dataclass(frozen=True)
+class SendMeter:
+    """What a send attempt is recorded as in the usage ledger: WA_OUT for a message to a customer, WA_ALERT for an
+    owner alert, and the outbox row (a message or a notification) it belongs to."""
+    kind: str
+    source_type: str
+    source_id: uuid.UUID
+
+
 def _send(db: Session, business_id: uuid.UUID, to: str, body: str, attempt: int, *,
-          template: tuple[str, str] | None = None) -> SendResult:
+          template: tuple[str, str] | None = None, meter: SendMeter | None = None) -> SendResult:
+    """One send attempt (`attempt` = the number the atomic claim handed out). With a `meter`, an attempt that reached
+    an adapter that sends is recorded in the usage ledger, in its own transaction, whatever its outcome. Nothing is
+    recorded when nothing was attempted: no active account, or an adapter that cannot send or is not metered (a
+    24-hour window found closed never gets here at all)."""
     account = _active_account(db, business_id)
     if account is None:
         return SendResult(ok=False, wa_message_id=None, delivery_status="failed", error="No WhatsApp account connected")
@@ -109,6 +123,13 @@ def _send(db: Session, business_id: uuid.UUID, to: str, body: str, attempt: int,
             result = SendResult(ok=False, wa_message_id=None, delivery_status="failed",
                                 error=f"{type(exc).__name__}: {exc}"[:300], retryable=True)
         ctx["status"] = "ok" if result.ok else "error"
+        if result.http_attempts is not None:
+            ctx["http_attempts"] = result.http_attempts
+    if meter is not None and adapter.metered:
+        record_wa_send(db.get_bind(), business_id, kind=meter.kind, source_type=meter.source_type,
+                       source_id=meter.source_id, attempt=attempt, status="success" if result.ok else "failed",
+                       is_real=adapter.is_real, message_kind="template" if template else "free_form",
+                       template_name=template[0] if template else None, recipient=to)
     return result
 
 
@@ -190,7 +211,8 @@ def _deliver_one(message_id: uuid.UUID, session_factory) -> None:
                                 error=f"Not sent: the customer {_seen(last_inbound)}; outside WhatsApp's 24-hour "
                                       "window only approved template messages can be delivered")
         else:
-            result = _send(db, business_id, conv.customer.whatsapp_number, msg.content, msg.send_attempts)
+            result = _send(db, business_id, conv.customer.whatsapp_number, msg.content, msg.send_attempts,
+                           meter=SendMeter(WA_OUT, "message", msg.id))
         if not result.ok and result.reason == OUTSIDE_WINDOW:
             conv = ConversationRepo(db, business_id).get(conv.id, for_update=True)  # one alert at a time
             _alert_owner_once(db, business_id, conv, WINDOW_ALERT,
@@ -206,10 +228,11 @@ def _deliver_one(message_id: uuid.UUID, session_factory) -> None:
 
 
 def record_late_failure(db: Session, business_id: uuid.UUID, msg: Message, error_code: int | None,
-                        error_title: str | None) -> None:
+                        error_title: str | None, *, verified: bool = False) -> None:
     """Meta accepted a message, then reported it failed (status webhook). The owner must not believe the customer
     got it: record why, flag the conversation and alert the owner once. The caller commits; the alert is sent by
-    the outbox like any other."""
+    the outbox like any other. The usage ledger gets one late-failure event (units 0), in this same transaction;
+    the success event of the attempt stays as it was. `verified`: the status webhook's signature was verified."""
     window = error_code == META_WINDOW_ERROR
     detail = f"error {error_code}: {error_title or 'no details'}" if error_code else (error_title or "no details")
     attrs = dict(msg.attributes or {})
@@ -219,6 +242,9 @@ def record_late_failure(db: Session, business_id: uuid.UUID, msg: Message, error
         attrs["error_code"] = error_code
     msg.attributes, msg.delivery_status = attrs, "failed"
     conv = ConversationRepo(db, business_id).get(msg.conversation_id)
+    record_wa_late_failure(db, business_id, kind=WA_OUT, source_type="message", source_id=msg.id,
+                           attempt=msg.send_attempts, verified=verified, message_kind="free_form",
+                           recipient=conv.customer.whatsapp_number if conv else None)
     if conv is None:
         return
     conv.needs_attention = True
@@ -231,8 +257,12 @@ def record_late_failure(db: Session, business_id: uuid.UUID, msg: Message, error
                           f"in the Duka dashboard.\nNot delivered: “{_quote(msg)}”")
 
 
-def record_late_notification_failure(n: Notification, error_code: int | None, error_title: str | None) -> None:
-    """An owner alert that Meta accepted and then failed: shown as failed, with the reason, in the dashboard."""
+def record_late_notification_failure(db: Session, business_id: uuid.UUID, n: Notification, error_code: int | None,
+                                     error_title: str | None, *, verified: bool = False) -> None:
+    """An owner alert that Meta accepted and then failed: shown as failed, with the reason, in the dashboard, and
+    one late-failure event (units 0) in the usage ledger, in the caller's transaction."""
+    record_wa_late_failure(db, business_id, kind=WA_ALERT, source_type="notification", source_id=n.id,
+                           attempt=n.attempts, verified=verified, message_kind=None, recipient=n.recipient)
     detail = f"error {error_code}: {error_title or 'no details'}" if error_code else (error_title or "no details")
     hint = (" You have not written to your shop's WhatsApp number in 24 hours: set an approved owner-notification "
             "template in Settings." if error_code == META_WINDOW_ERROR else "")
@@ -280,7 +310,8 @@ def _deliver_notification(notification_id: uuid.UUID, session_factory) -> None:
         s = SettingsRepo(db, business_id).first()
         template = (s.owner_notification_template, s.owner_notification_template_language) \
             if s and s.owner_notification_template else None
-        result = _send(db, business_id, n.recipient, n.body, n.attempts, template=template)
+        result = _send(db, business_id, n.recipient, n.body, n.attempts, template=template,
+                       meter=SendMeter(WA_ALERT, "notification", n.id))
         n.status, n.next_send_at = _next_state(result, n.attempts)
         n.wa_message_id = result.wa_message_id if result.ok else None
         n.error = None if result.ok else result.error
@@ -320,12 +351,46 @@ def recover_stale_sends(session_factory=SessionLocal) -> int:
         stale = list(db.scalars(select(Message).where(Message.delivery_status == "sending",
                                                        Message.send_started_at < cutoff).with_for_update(skip_locked=True)))
         for msg in stale:
+            conv = ConversationRepo(db, msg.business_id).get(msg.conversation_id)
+            # Before the attempt counter below is overwritten; written before the commit, so a crash in between
+            # leaves the row 'sending' and the next sweep records the same key again (a no-op).
+            _record_interrupted_send(db, msg.business_id, WA_OUT, "message", msg.id, msg.send_attempts, "free_form",
+                                     conv.customer.whatsapp_number if conv else None, msg.send_started_at)
             msg.send_attempts = settings.outbox_max_attempts  # never retried
-            _record_message_result(msg, ConversationRepo(db, msg.business_id).get(msg.conversation_id), unknown)
+            _record_message_result(msg, conv, unknown)
         stale_n = list(db.scalars(select(Notification).where(Notification.status == "sending",
                                                              Notification.send_started_at < cutoff)
                                   .with_for_update(skip_locked=True)))
         for n in stale_n:
+            # What was sent (template or text) is not known any more: the settings may have changed since.
+            _record_interrupted_send(db, n.business_id, WA_ALERT, "notification", n.id, n.attempts, None, n.recipient,
+                                     n.send_started_at)
             n.status, n.error = "failed", unknown.error
         db.commit()
         return len(stale) + len(stale_n)
+
+
+def _record_interrupted_send(db: Session, business_id: uuid.UUID, kind: str, source_type: str, source_id: uuid.UUID,
+                             attempt: int, message_kind: str | None, recipient: str | None,
+                             claimed_at: datetime | None) -> None:
+    """A claimed send that never reported back: its outcome is unknown. Recorded under the attempt's own key, so a
+    result the attempt did manage to write is kept as it is. Whether the attempt was a real send is not stored
+    anywhere: it is read from the account only if the account has not been changed since the attempt was claimed
+    (`claimed_at`), otherwise it is left NULL (not known) rather than described by today's configuration. Nothing is
+    recorded when nothing can have been sent (no active account, an adapter that sends nothing)."""
+    try:
+        account = _active_account(db, business_id)
+        if account is None:
+            return
+        adapter = get_adapter(account)
+        client = getattr(adapter, "client", None)  # the Cloud adapter opens an HTTP client we never use here
+        if client is not None:
+            client.close()
+        if adapter.metered:
+            unchanged = claimed_at is not None and account.updated_at <= claimed_at
+            record_wa_send(db.get_bind(), business_id, kind=kind, source_type=source_type, source_id=source_id,
+                           attempt=attempt, status="unknown", is_real=adapter.is_real if unchanged else None,
+                           message_kind=message_kind, template_name=None, recipient=recipient)
+    except Exception as exc:  # recovery of the row itself must go on
+        log_event(logger, "usage.record_failed", 40, operation="usage", status="error", error=repr(exc)[:300],
+                  business_id=str(business_id), source_id=str(source_id), kind=kind, event_status="unknown")

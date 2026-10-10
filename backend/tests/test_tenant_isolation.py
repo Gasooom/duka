@@ -19,7 +19,7 @@ from app.db.base import Base
 from app.db.session import SessionLocal
 from app.integrations.whatsapp.parser import build_text_webhook
 from app.main import app
-from app.models import Business, Customer, Message, Order, OrderItem, Product, User
+from app.models import Business, Customer, Message, Order, OrderItem, Product, UsageEvent, User
 from app.repositories.repos import CartItemRepo, CartRepo, MessageRepo, ProductRepo, UsageEventRepo
 from app.services.conversation_service import ConversationService, CustomerService
 from app.services.knowledge_service import KnowledgeService
@@ -350,17 +350,18 @@ def test_usage_ledger_is_scoped_to_the_tenant_that_used_it(fashion, electronics,
     fashion.send("and hoodies?")
     electronics.send("samsung phone")
     a_repo, b_repo = UsageEventRepo(db, a_id), UsageEventRepo(db, b_id)
-    a_events, b_events = a_repo.list(), b_repo.list()
+    ai = UsageEvent.kind == "llm_call"  # the AI events; the WhatsApp ones have their own isolation test
+    a_events, b_events = a_repo.list(where=[ai]), b_repo.list(where=[ai])
     assert (len(a_events), len(b_events)) == (2, 1)
-    assert {e.business_id for e in a_events} == {a_id} and a_repo.count() == 2
+    assert {e.business_id for e in a_events} == {a_id} and a_repo.count(ai) == 2
     assert a_repo.get(b_events[0].id) is None and b_repo.get(a_events[0].id) is None
     assert a_repo.record(business_id=b_id, kind="llm_call", idempotency_key="llm:spoofed", status="success")
     db.commit()
-    assert (a_repo.count(), b_repo.count()) == (3, 1)  # a spoofed business_id is ignored
+    assert (a_repo.count(ai), b_repo.count(ai)) == (3, 1)  # a spoofed business_id is ignored
     with pytest.raises(IntegrityError, match="immutable"):
         db.execute(text("UPDATE usage_events SET business_id = :b WHERE business_id = :a"), {"a": a_id, "b": b_id})
     db.rollback()
-    assert (a_repo.count(), b_repo.count()) == (3, 1)
+    assert (a_repo.count(ai), b_repo.count(ai)) == (3, 1)
 
 
 def test_knowledge_search_is_scoped(fashion, electronics, db):

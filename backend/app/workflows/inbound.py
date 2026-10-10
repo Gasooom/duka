@@ -38,6 +38,7 @@ from app.services.messaging_service import (
     send_to_customer,
     take_outbox,
 )
+from app.services.usage_service import record_wa_inbound
 from app.workflows.handoff import ai_paused_reply, conversation_language, handoff_reply, request_human
 
 logger = get_logger(__name__)
@@ -87,12 +88,14 @@ def resolve_account(db: Session, phone_number_id: str) -> WhatsAppAccount | None
 
 
 # ---------------------------------------------------------------- ingest (inside the webhook request)
-def ingest(db: Session, payload: dict) -> IngestResult:
+def ingest(db: Session, payload: dict, *, verified: bool = False) -> IngestResult:
     """Persist every message of a webhook payload as a webhook_events row (idempotent) and apply status
-    updates. The caller commits; only then may the webhook be acknowledged."""
+    updates. The caller commits; only then may the webhook be acknowledged. `verified`: only the webhook route
+    sets it, after checking Meta's signature; it is what makes inbound usage (and a late failure) count as real."""
     messages, statuses = parse_webhook(payload)
     out = IngestResult()
     for msg in messages:
+        msg.signature_verified = verified
         account = resolve_account(db, msg.phone_number_id)
         business = db.get(Business, account.business_id) if account else None
         if business is None or not business.is_active:
@@ -119,21 +122,21 @@ def ingest(db: Session, payload: dict) -> IngestResult:
         if event_id is None:
             log_event(logger, "inbound.duplicate", operation="inbound.ingest", status="duplicate",
                       business_id=str(business.id))
-    _apply_statuses(db, statuses)
+    _apply_statuses(db, statuses, verified)
     return out
 
 
-def ingest_and_commit(payload: dict, session_factory=SessionLocal) -> IngestResult:
+def ingest_and_commit(payload: dict, session_factory=SessionLocal, *, verified: bool = False) -> IngestResult:
     db = session_factory()
     try:
-        result = ingest(db, payload)
+        result = ingest(db, payload, verified=verified)
         db.commit()
         return result
     finally:
         db.close()
 
 
-def _apply_statuses(db: Session, statuses: list[StatusUpdate]) -> None:
+def _apply_statuses(db: Session, statuses: list[StatusUpdate], verified: bool = False) -> None:
     for s in statuses:
         account = resolve_account(db, s.phone_number_id)
         if not account:
@@ -146,12 +149,13 @@ def _apply_statuses(db: Session, statuses: list[StatusUpdate]) -> None:
                 n = db.scalar(select(Notification).where(Notification.business_id == account.business_id,
                                                          Notification.wa_message_id == s.wa_message_id))
                 if n is not None and n.status != "failed":
-                    record_late_notification_failure(n, s.error_code, s.error_title)
+                    record_late_notification_failure(db, account.business_id, n, s.error_code, s.error_title,
+                                                     verified=verified)
             continue
         if msg.delivery_status == s.status:
             continue
         if s.status == "failed":
-            record_late_failure(db, account.business_id, msg, s.error_code, s.error_title)
+            record_late_failure(db, account.business_id, msg, s.error_code, s.error_title, verified=verified)
         elif _STATUS_RANK.get(s.status, -1) > _STATUS_RANK.get(msg.delivery_status or "", -1):
             msg.delivery_status = s.status
 
@@ -287,6 +291,10 @@ def process_message(db: Session, msg: InboundMessage) -> ProcessResult:
     if inbound is None:
         log_event(logger, "inbound.duplicate", operation="inbound", status="duplicate")
         return ProcessResult(status="duplicate", business_id=business.id, conversation_id=conv.id)
+    # One inbound customer message really stored = one usage event, in this same transaction (a duplicate returned
+    # above, a rolled-back turn takes it along and records it again when retried). The tenant is the account's.
+    record_wa_inbound(db, business.id, wamid=msg.wa_message_id, message_id=inbound.id, is_real=msg.signature_verified,
+                      sender=customer.whatsapp_number, message_type=msg.type)
     # Lock the conversation row so concurrent messages from one customer are handled in order.
     conv = convs.get(conv.id, for_update=True)
     if text_:  # before any routing, so even paused/human conversations show the customer's current language

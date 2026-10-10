@@ -1,5 +1,6 @@
 """Public webhooks: WhatsApp Cloud API and payment providers."""
 import json
+from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
@@ -44,7 +45,8 @@ async def receive_whatsapp(request: Request):
         raise HTTPException(400, "Invalid JSON")
     # Persist before acknowledging: if this raises (e.g. database down) the 5xx makes Meta redeliver.
     # Processing (agent + reply) happens in the workers, so the response stays fast.
-    result = await run_in_threadpool(ingest_and_commit, payload)
+    # Here only with a valid signature, or in development with no app secret configured (then nothing is verified).
+    result = await run_in_threadpool(partial(ingest_and_commit, payload, verified=bool(settings.whatsapp_app_secret)))
     workers.wake()
     return {"status": "received", "accepted": len(result.event_ids)}
 

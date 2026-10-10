@@ -197,6 +197,7 @@ def provider_for(name: str) -> LLMProvider:
 
 class Capture(WhatsAppAdapter):
     mode = "eval"
+    metered = False  # evaluation runs are platform activity, never a tenant's usage (usage_events)
 
     def __init__(self):
         self.sent: list[tuple[str, str]] = []

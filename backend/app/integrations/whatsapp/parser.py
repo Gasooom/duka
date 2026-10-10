@@ -16,6 +16,10 @@ class InboundMessage:
     profile_name: str | None = None
     timestamp: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # Set by the server at ingest, never read from the payload: the webhook's X-Hub-Signature-256 was verified with
+    # the app secret, so the message really came from Meta. False for the dev simulator, tests and an unsigned
+    # development webhook. Decides usage_events.is_real for inbound messages.
+    signature_verified: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         """JSON form stored in webhook_events.payload."""

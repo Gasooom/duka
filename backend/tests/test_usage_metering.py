@@ -80,13 +80,20 @@ def completion(content=None, tool_calls=None, *, served="configured-1-2026-07-01
 
 
 def events(**where) -> list[UsageEvent]:
+    """The AI usage events (llm_call), oldest first; WhatsApp events are tested in test_whatsapp_metering.py."""
     with SessionLocal() as s:
-        return list(s.scalars(select(UsageEvent).filter_by(**where).order_by(UsageEvent.occurred_at)))
+        return list(s.scalars(select(UsageEvent).filter_by(**{"kind": "llm_call", **where})
+                              .order_by(UsageEvent.occurred_at)))
 
 
 def count(model) -> int:
     with SessionLocal() as s:
         return s.scalar(select(func.count()).select_from(model))
+
+
+def ai_count() -> int:
+    with SessionLocal() as s:
+        return s.scalar(select(func.count()).select_from(UsageEvent).where(UsageEvent.kind == "llm_call"))
 
 
 def record(business_id: uuid.UUID, key: str, **kw) -> bool:
@@ -231,7 +238,8 @@ def test_usage_commits_on_its_own_and_survives_the_rollback_of_the_turn(fashion,
         # The model call is over and the turn's transaction is still open: another connection already sees the
         # usage event, but not the agent run the turn is about to roll back.
         with SessionLocal() as other:
-            seen["usage"] = other.scalar(select(func.count()).select_from(UsageEvent))
+            seen["usage"] = other.scalar(select(func.count()).select_from(UsageEvent)
+                                         .where(UsageEvent.kind == "llm_call"))
             seen["runs"] = other.scalar(select(func.count()).select_from(AgentRun))
         seen["runs_in_turn"] = turn_db.scalar(select(func.count()).select_from(AgentRun))
         raise RuntimeError("crash after the model call")
@@ -254,12 +262,15 @@ def test_usage_commits_on_its_own_and_survives_the_rollback_of_the_turn(fashion,
     assert again.id == recorded.id and retry.idempotency_key != recorded.idempotency_key
     assert (retry.status, retry.input_tokens) == ("success", 60)
     # Usage outlives the data it was for: deleting the conversation (with its messages and agent runs) and the
-    # customer, and purging processed webhook events, removes none of it.
+    # customer, and purging processed webhook events, removes none of it (the WhatsApp events of the retried turn
+    # included).
+    all_events = count(UsageEvent)
+    assert ai_count() == 2 and all_events > 2
     db.execute(text("DELETE FROM conversations"))
     db.execute(text("DELETE FROM customers"))
     db.execute(text("DELETE FROM webhook_events"))
     db.commit()
-    assert count(AgentRun) == count(Message) == 0 and count(UsageEvent) == 2
+    assert count(AgentRun) == count(Message) == 0 and ai_count() == 2 and count(UsageEvent) == all_events
 
 
 def test_a_repeated_idempotency_key_is_recorded_once(fashion, electronics):
@@ -302,7 +313,8 @@ def test_a_metering_failure_never_breaks_the_reply(fashion, outbox, monkeypatch,
     with caplog.at_level(logging.ERROR, logger="app"):
         fashion.send("do you have jackets?")
     assert outbox.sent[-1][1] == ANSWER
-    [log] = [r for r in caplog.records if r.getMessage() == "usage.record_failed"]
+    [log] = [r for r in caplog.records
+             if r.getMessage() == "usage.record_failed" and r.extra_fields["kind"] == "llm_call"]
     fields = log.extra_fields  # what was not stored, for the operator
     assert (fields["kind"], fields["model"], fields["input_count"], fields["output_count"]) == \
         ("llm_call", "served-1", 10, 5)
@@ -315,13 +327,13 @@ def test_the_rules_engine_records_no_ai_usage(fashion, outbox, db):
     fashion.send("Hello!")  # greeting fast path
     runs = db.query(AgentRun).all()
     assert sum(r.llm_calls for r in runs) > 0  # agent_runs.llm_calls counts the rules engine as calls...
-    assert count(UsageEvent) == 0  # ...the usage ledger only records real model calls
+    assert ai_count() == 0  # ...the usage ledger only records real model calls (WhatsApp traffic is its own kind)
 
 
 def test_a_provider_with_no_model_behind_it_records_nothing(fashion, outbox):
     set_provider_override(UnavailableProvider("LLM_API_KEY is not set"))
     fashion.send("do you have jackets?")
-    assert outbox.sent[-1][1].startswith("Sorry, I'm having trouble") and count(UsageEvent) == 0
+    assert outbox.sent[-1][1].startswith("Sorry, I'm having trouble") and ai_count() == 0
 
 
 def test_llm_check_is_an_operator_call_and_records_nothing(fashion, monkeypatch, capsys):

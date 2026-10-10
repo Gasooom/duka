@@ -43,19 +43,66 @@ SQL statements and parameters from database errors, phone numbers (masked to the
 
 ## Usage metering
 
-Every call the assistant makes to a real AI model (reply turns and conversation summaries) is one row in
-`usage_events`, for the shop whose conversation made it: the model the provider served and the one Duka asked for,
-input/output tokens, attempts (provider retries), success or error, and an estimated cost. Each row is written in
-its own transaction right after the call, so it is kept when the turn that made the call fails and is retried, and
-when conversations, customers or processed webhook events are deleted later. Rows can only be inserted: a database
-trigger refuses UPDATE and DELETE, and a shop that has usage cannot be deleted. `agent_runs.llm_calls` is not a
-usage figure: it also counts the offline rules engine. Nothing is recorded for the rules engine, evaluation runs
-(`evals/`) or `python -m app.cli llm-check`. WhatsApp messages and embeddings are not metered yet.
+`usage_events` is the one usage ledger. Rows are inserted, never changed or removed: a database trigger refuses
+UPDATE and DELETE, a shop that has usage cannot be deleted, and a correction is a new row. Each row is for the shop
+whose conversation, webhook account or outbox row it came from, never from anything a customer or caller supplies.
+
+**AI** (`llm_call`): every call the assistant makes to a real AI model (reply turns and conversation summaries): the
+model the provider served and the one Duka asked for, input/output tokens, attempts (provider retries), success or
+error, and an estimated cost. Each row is written in its own transaction right after the call, so it is kept when the
+turn that made the call fails and is retried, and when conversations, customers or processed webhook events are
+deleted later. `agent_runs.llm_calls` is not a usage figure: it also counts the offline rules engine. Nothing is
+recorded for the rules engine, evaluation runs (`evals/`) or `python -m app.cli llm-check`.
+
+**WhatsApp** (migration 0010; embeddings are not metered yet):
+
+| kind | one row per | key (unique per shop) | status |
+|---|---|---|---|
+| `wa_in` | inbound customer message that was stored: text, interactive, button, image, audio, video, document, sticker, location, contacts. Not counted: reactions, WhatsApp system notices, anything else | `wa_in:<wamid>` | `received` |
+| `wa_out` | attempt to send a message to a customer | `wa_out:<message id>:<send attempt>` | `success`, `failed`, `unknown` |
+| `wa_alert` | attempt to send an alert to the owner | `wa_alert:<notification id>:<send attempt>` | `success`, `failed`, `unknown` |
+| `wa_out` / `wa_alert` | late failure: WhatsApp accepted a message and then reported it failed | `wa_late_fail:<message or notification id>` | `late_failed` (`units` 0: a correction, never another send) |
+
+- **Attempts.** The attempt number is the outbox send attempt (`send_attempts` / `attempts`), handed out by the same
+  atomic claim that decides which worker sends, so a transient failure and its retry are two rows (`…:1` failed, `…:2`
+  success) and two workers can never record the same attempt twice. One attempt may hold several HTTP requests inside
+  the Cloud adapter (up to 3); they are logged as `http_attempts` on `whatsapp.send`, not stored. Nothing is recorded
+  when nothing was attempted: the 24-hour window found closed, no active WhatsApp account, a Cloud account without a
+  token (those outcomes are logged and shown on the message as before).
+- **Interrupted sends.** A send found stuck in `sending` (the process died) is recorded as `unknown` under its own
+  attempt key, so a result that attempt had already written is kept. Whether the attempt was real is not stored
+  anywhere: it is read from the account only if the account was not changed since the attempt was claimed, otherwise
+  `is_real` is NULL (the only case where a WhatsApp row may lack it). An interrupted alert does not claim to know
+  whether it was a template. A result that arrives after recovery already recorded `unknown` is not stored (rows are
+  never updated); the window is the recovery timeout (120 s) against an adapter call of at most about 30 s.
+- **Late failures.** The original success row is never edited. The late failure repeats what that attempt recorded
+  (real or simulated, template, market); when that row is missing (for example a message sent before 0010) it uses
+  what is known now. Reporting should treat a message with a late failure as not delivered.
+- **Real or simulated** (`is_real`). A send is real when it went through the Cloud API adapter; the development
+  adapter, test adapters and `WHATSAPP_FORCE_DEV` are not. An inbound message is real when its webhook signature was
+  verified with `WHATSAPP_APP_SECRET`: production requires the secret, so there every inbound message is real; the dev
+  simulator, tests and an unsigned development webhook are not. For an inbound message the account mode never decides
+  it.
+- **Template and market.** `message_kind` is `free_form` or `template`; `template_name` is set for a template and never
+  guessed (customer messages are always free-form; an owner alert is a template only when the shop configured one).
+  Duka does not know Meta's template category and stores none. `market` is the recipient's country calling code, for
+  example `250`, from the digits sent to or received from WhatsApp, by a longest match on the public calling-code table
+  (`app/integrations/whatsapp/market.py`, checked against ITU's list of assigned codes as of 15 December 2016; a code
+  assigned later resolves to NULL); it is NULL for a local number (leading 0), digits that start with no assigned code,
+  and a `1` or `7` number that is not 11 digits long. It never comes from where the business is, and no phone number is
+  stored (the column holds three characters at most). Several territories share some codes: `1` is the whole North
+  American numbering plan (United States, Canada, the Caribbean), `7` Russia and Kazakhstan, `39` Italy and Vatican
+  City, `599` Curaçao and the Caribbean Netherlands: a price rule for a code applies to all of it. Other digits typed
+  without a country code and without a leading 0 (an owner typing a number without the country code) resolve to
+  whatever code their first digits form.
+- **Downgrade.** Migration 0010 cannot be downgraded once WhatsApp rows exist (they could only be removed by defeating
+  the append-only trigger); keep it.
 
 Accepted limitation (for now): metering is best effort, with no queue behind it. If the backend process dies in the
-moment between the provider's answer and the commit of its row, or the row cannot be written, that one call is
-missing from `usage_events`. A failed write is logged as `usage.record_failed` with the row's fields. A turn that
-fails and is retried never removes a row that was written.
+moment between an external call and the commit of its row, or the row cannot be written, that one call is missing from
+`usage_events`. A failed write is logged as `usage.record_failed` with the row's fields (never a phone number), and the
+customer's reply or the message still goes out. An inbound row and a late-failure row are written in the transaction of
+the state they describe (inside a savepoint), so a turn that fails and is retried records its inbound row once.
 
 The cost comes from the operator's price list, a JSON file named by `USAGE_PRICING_FILE`. Duka ships no prices:
 copy them from the provider's pricing page, and change `version` whenever a price changes (each row keeps the cost
@@ -65,14 +112,30 @@ and the version it was recorded with; earlier rows are never re-priced).
 {"version": "2026-10-08", "currency": "USD",
  "llm": [{"provider": "openai_compat", "model": "<model>", "input_per_1m": "<price>", "output_per_1m": "<price>"},
          {"provider": "openai_compat", "model": "<model name prefix>", "match": "prefix",
-          "input_per_1m": "<price>", "output_per_1m": "<price>"}]}
+          "input_per_1m": "<price>", "output_per_1m": "<price>"}],
+ "whatsapp": {"billable_statuses": ["success"],
+              "templates": [{"name": "<approved template name>", "category": "<category>"}],
+              "rules": [{"markets": ["<country calling code>"], "message_kind": "free_form",
+                         "price_per_message": "<price>"},
+                        {"markets": ["<country calling code>"], "message_kind": "template",
+                         "category": "<category>", "price_per_message": "<price>"}]}}
 ```
 
-Prices are per 1M tokens (strings or numbers; both are read as exact decimals). A call is priced by the model the
+AI prices are per 1M tokens (strings or numbers; both are read as exact decimals). A call is priced by the model the
 provider says it served, else by the model Duka asked for; an exact entry beats a prefix entry and the longest prefix
 wins. Without the file, or for a model it does not list, the call is still recorded, with `cost_micros` NULL
-(unpriced). A failed call costs 0. A file that cannot be read or is not a valid price list stops the backend from
-starting, with the reason. If a row cannot be written, the customer's reply still goes out.
+(unpriced). A failed call costs 0.
+
+WhatsApp prices are per message, in the file's `currency`, chosen by market, kind and (for a template) category. The
+category is the operator's: declare each template's category under `templates`; a template that is not declared, a
+market without a rule, or an unknown market stays unpriced. `billable_statuses` says which outcomes of a real send
+incur the price (`success`, `failed`). Everything else is priced 0 or left unpriced on purpose: other outcomes of a real
+send cost 0, a simulated send costs 0 (nothing reached WhatsApp), a late failure adds 0, an `unknown` send is unpriced
+(whether it was delivered is not known) and an inbound message has no price.
+
+A file that cannot be read or is not a valid price list (a typo in a key, a negative price, a template rule without a
+category, the same market priced twice) stops the backend from starting, with the reason. If a row cannot be written,
+the customer's reply still goes out.
 
 ## Backups
 
