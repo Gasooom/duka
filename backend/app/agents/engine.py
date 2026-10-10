@@ -34,9 +34,10 @@ from app.i18n import error_text, t
 from app.models import AgentConfig, AgentRun, Business, Conversation, Customer, Message, Product
 from app.models.business import AgentConfig as _AgentConfigModel
 from app.repositories.repos import AgentConfigRepo, AgentRunRepo, ProductRepo
-from app.services.ai_guard import AIGuard
+from app.services.ai_guard import STORE_UNAVAILABLE, AIGuard, AIGuardDenied
 from app.services.commerce_service import CartService, CheckoutChanged, CheckoutService, OrderService, money
 from app.services.conversation_service import ConversationService
+from app.services.messaging_service import notify_owner
 from app.services.usage_service import record_llm_call
 from app.tools import commerce_tools  # noqa: F401  (registers tools)
 from app.tools.registry import ToolContext, execute_tool, tools_for
@@ -51,6 +52,12 @@ MAX_MSG_CHARS = 600
 MAX_TOOL_RESULT_CHARS = 3500
 DEFAULT_GREETING = _AgentConfigModel.__table__.c.greeting.default.arg
 DEFAULT_FALLBACK = _AgentConfigModel.__table__.c.fallback_message.default.arg
+AI_LIMITED_ALERT = "assistant_limited"  # owner alert kind (notifications.kind): the Runaway Conversation Guard stopped AI
+_LIMITED_WHY = {
+    "message": "one message used up its AI budget after repeated processing problems",
+    "customer": "a customer reached the assistant's usage limit for this {period} (UTC)",
+    "tenant": "your shop reached its assistant usage limit for this {period} (UTC)",
+}
 
 # How the model must write in each conversation language (the language comes from conversation state).
 LANGUAGE_RULES = {
@@ -163,6 +170,9 @@ class AgentEngine:
         except Exception as exc:
             record_llm_call(self.db.get_bind(), self.business.id, **call, status="error", model=None,
                             attempts=getattr(exc, "attempts", 1))
+            stopped = self.guard.take_denial()
+            if stopped is not None:  # the guard refused a retry of this call: the turn is limited, not failed
+                raise stopped from exc
             raise
         record_llm_call(self.db.get_bind(), self.business.id, **call, status="success", model=resp.model,
                         input_tokens=resp.prompt_tokens, output_tokens=resp.completion_tokens,
@@ -302,14 +312,19 @@ class AgentEngine:
                                   language=self.language)
                 tool_calls_made = 0
                 out_of_time = False
+                limited: AIGuardDenied | None = None
                 for _ in range(settings.agent_max_tool_iterations):
                     remaining = deadline - time.monotonic()
                     if remaining < 1:
                         out_of_time = True
                         break
                     t0 = time.perf_counter()
-                    resp = self._complete(("agent_run", run.id), messages, tool_schemas, model=self.model,
-                                          temperature=float(self.cfg.temperature), timeout=remaining)
+                    try:
+                        resp = self._complete(("agent_run", run.id), messages, tool_schemas, model=self.model,
+                                              temperature=float(self.cfg.temperature), timeout=remaining)
+                    except AIGuardDenied as exc:  # the Runaway Conversation Guard stopped the assistant
+                        limited = exc
+                        break
                     run.llm_calls += 1
                     prompt_tokens += resp.prompt_tokens or 0
                     completion_tokens += resp.completion_tokens or 0
@@ -352,7 +367,15 @@ class AgentEngine:
                                          "content": result_json[:MAX_TOOL_RESULT_CHARS]})
                     if out_of_time:
                         break
-                run.status = "success" if text else "error"
+                if limited is not None:
+                    run.status, run.error = "limited", f"AI guard: {limited.scope} {limited.period} {limited.reason}"
+                    steps.append({"type": "guard", "scope": limited.scope, "period": limited.period,
+                                  "reason": limited.reason})
+                    # The facts the tools already returned, else a reply that claims nothing and offers a person.
+                    text = self._render_facts(turn_results, self.language) or self._limited_reply()
+                    self._flag_limited(conv, limited)
+                else:
+                    run.status = "success" if text else "error"
                 if not text:
                     if out_of_time:
                         run.error = f"Turn time budget ({settings.agent_turn_timeout_seconds}s) exhausted"
@@ -372,7 +395,7 @@ class AgentEngine:
                 # The customer confirms exactly what the server computed, never a paraphrase by the model.
                 text, outcome.checkout_cart_id = checkout_summary[0], uuid.UUID(checkout_summary[1])
                 steps.append({"type": "checkout_summary", "cart_id": checkout_summary[1]})
-            elif text and self.provider.is_llm:
+            elif text and self.provider.is_llm and run.status != "limited":  # limited: server text only
                 context = self._context_products(customer, conv)
                 ledger = build_ledger(turn_results, self._state, trigger.content, context_products=context,
                                       owner_text=self._owner_text())
@@ -389,7 +412,8 @@ class AgentEngine:
                     unsure = text is None
                     text = text or t("unsure", self.language)
             unsure = unsure or run.status == "error"
-            handed_off = self._track_uncertainty(conv, unsure, steps) or handed_off
+            if run.status != "limited":  # a guard stop says nothing about how reliably the assistant answers
+                handed_off = self._track_uncertainty(conv, unsure, steps) or handed_off
             if handed_off and unsure:
                 text = handoff_reply(self.business, self.language)
         if not text:
@@ -404,6 +428,30 @@ class AgentEngine:
                   llm_calls=run.llm_calls, tools=[s["tool"] for s in steps if s["type"] == "tool"])
         outcome.text, outcome.handed_off = text, handed_off
         return outcome
+
+    def _limited_reply(self) -> str:
+        """The customer's reply when the guard stopped the assistant and no tool fact exists: nothing is claimed, and
+        the way to a person is the deterministic handoff (or the shop's phone when handoff is off)."""
+        text = t("ai_limited", self.language)
+        if self.business.human_handoff_enabled:
+            return text + t("ask_person", self.language)
+        if self.business.phone:
+            return text + t("contact_us", self.language, phone=self.business.phone)
+        return text
+
+    def _flag_limited(self, conv: Conversation, denied: AIGuardDenied) -> None:
+        """Decision D4: flag the conversation for the shop team and alert the owner at most once per tenant and UTC
+        window (the hour for a message budget or an hourly limit, the day for a daily limit)."""
+        conv.needs_attention = True
+        window = denied.period if denied.period in ("hour", "day") else "hour"
+        if not self.guard.claim_alert(window):
+            return
+        why = ("the assistant's usage check is unavailable" if denied.reason == STORE_UNAVAILABLE
+               else _LIMITED_WHY[denied.scope].format(period=denied.period))
+        notify_owner(self.db, self.business.id, AI_LIMITED_ALERT,
+                     f"⚠️ The assistant has stopped answering some messages for now: {why}. The conversations that "
+                     f"need you are flagged in the Duka dashboard: please reply to them there.",
+                     entity_type="conversation", entity_id=conv.id)
 
     def _context_products(self, customer: Customer, conv: Conversation) -> list[dict[str, Any]]:
         """Current facts (price, stock, active) of the products the customer was last shown or has in the cart,

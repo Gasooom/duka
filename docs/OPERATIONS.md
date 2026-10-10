@@ -146,7 +146,8 @@ in `usage_events`.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `AI_GUARD_MESSAGE_MODE`, `AI_GUARD_CUSTOMER_MODE`, `AI_GUARD_TENANT_MODE` | `observe` | `off` = not counted; `observe` = counted, and a reservation past a limit is logged (`ai_guard.decision`, `would_block`) but never refused |
+| `AI_GUARD_MESSAGE_MODE` | `enforce` | the per-message budget: `off` = not counted; `observe` = counted, a reservation past the limit logged (`ai_guard.decision`, `would_block`) but never refused; `enforce` = refused |
+| `AI_GUARD_CUSTOMER_MODE`, `AI_GUARD_TENANT_MODE` | `observe` | the same modes for customers and tenants |
 | `AI_GUARD_MESSAGE_CALLS`, `AI_GUARD_MESSAGE_ATTEMPTS` | `0` = one processing attempt | model calls / HTTP attempts one inbound message may use across all its retries (default: 1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, × `LLM_MAX_ATTEMPTS`) |
 | `AI_GUARD_{CUSTOMER,TENANT}_{CALLS,ATTEMPTS}_PER_{HOUR,DAY}` | `0` = no limit | per customer / per tenant and UTC hour / day. Choose them from observe-mode data (below), never by guess |
 
@@ -165,6 +166,12 @@ Reconciling with the ledger: for a tenant and UTC hour, `ai_usage_counters.calls
 `usage_events` rows of kind `llm_call` in that hour (reservations are made before calls, and a ledger write can fail);
 `attempts` is at least the sum of their `attempts`. A difference means calls that never returned a ledger row
 (a crash between reservation and call, or a failed ledger write: `usage.record_failed` in the logs).
+
+When a reservation is refused (enforce mode) the turn ends `limited`: the customer gets the facts the tools
+already returned or a short reply that claims nothing and offers a person, the conversation is flagged, and the
+owner gets one `assistant_limited` alert per tenant and UTC window. If the counters cannot be used, an enforcing
+scope refuses (fail closed): customers then get that reply until the database is healthy again. Rolling back is a
+setting: `AI_GUARD_MESSAGE_MODE=observe` (or `off`); the counters and the ledger keep their history.
 
 Metrics: `duka_ai_guard_reserved_current_hour{unit}`, `duka_ai_guard_busiest_tenant_calls_current_hour`,
 `duka_ai_guard_over_limit_24h{scope}`, `duka_ai_guard_denied_24h{scope}`. Logs: `ai_guard.decision`,
@@ -210,6 +217,8 @@ before the restore are in the renamed database. Run `scripts/verify_restore.sh` 
 | `send_failures_1h` > 0 | conversation in the inbox shows the error | expired/invalid WhatsApp token → owner reconnects the number (WhatsApp page); 24 h window closed → the owner must wait for the customer or use a template |
 | `agent_errors_1h` high | logs `agent.error` | LLM provider outage or key problem: customers get the fallback; two failures in a row hand the chat to the owner. `python -m app.cli llm-check` |
 | Logs `agent.turn_budget_exhausted` | the agent run in the conversation debugger (a `deadline` step lists skipped tool calls) | a turn used its whole `AGENT_TURN_TIMEOUT_SECONDS` (model calls and tools together); the customer got the facts the tools had already returned, or the fallback if none. Frequent: a slow model or slow embeddings |
+| `assistant_limited` alert, logs `ai_guard.decision` with `refused` | `agent_runs` with status `limited` (the `guard` step names the scope and limit); `ai_usage_counters` (Runaway Conversation Guard) | a message, customer or the shop used up its AI allowance: reply to the flagged conversations by hand. A message budget is used up only by repeated processing failures (look for `webhook.retry`); after fixing the cause, `requeue-dead` gives requeued messages a fresh budget |
+| Logs `ai_guard.store_error` with `fail_closed: true` | database health; `ai_usage_counters` | the guard could not use its counters and refused AI calls rather than spend without a limit; customers get the short reply. Fix the database; to keep AI running meanwhile, set `AI_GUARD_MESSAGE_MODE=observe` |
 | Logs `embeddings.unavailable` | `EMBEDDING_PROVIDER` / its key; provider status | the embeddings service failed or the turn had no time left for it; searches still work, ranked by words only (vectors never admit results, so nothing wrong is shown) |
 | Many `agent.ungrounded` | agent runs in the conversation debugger | the model states facts the tools didn't return; customers still get correct server-rendered answers. Review the prompt/model choice (weekly review: `docs/EXTERNAL_VALIDATION.md` › 6) |
 | `customer_rate_limited` alert, logs `inbound.rate_limited` | the flagged conversation (extra messages are marked `rate_limited`) | a customer sent more than 30 messages a minute; the extra ones got no automatic answer. Reply by hand if it is a real customer; if it is spam or a bot loop, use **Take over** so the assistant stops replying. One alert per conversation per day |

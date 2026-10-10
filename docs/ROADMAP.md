@@ -118,7 +118,7 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 
 | Risk | Severity | Evidence | Mitigation (phase) |
 |---|---|---|---|
-| A failing turn repeats its model calls on every retry (up to 25 calls for one message, no reply) | High | `docs/P1_RUNAWAY_GUARD.md` F1, probe 2 | Per-message budget (B3) |
+| A failing turn repeats its model calls on every retry (up to 25 calls for one message, no reply) | High → mitigated | F1, probe 2; B3 enforces the per-message budget by default (6 calls in the same probe) | B3 done |
 | No tenant ceiling on model calls/tokens | High | F2, probe 3 | Tenant limits (B5), then quotas (C4) |
 | Per-customer limit is in-process only | Medium | F3, `app/core/ratelimit.py` | Durable per-customer limit (B4); shared limiter before multi-instance (F) |
 | Tool and embedding time not covered by the turn deadline | Medium → mitigated | F4, probe 4; fixed by B1 (`tests/test_turn_deadline.py`) | B1 done; other tool-side external calls (MoMo, not enabled) only have their own timeouts |

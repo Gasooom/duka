@@ -55,6 +55,14 @@ def by_scope(rows: list[AiUsageCounter]) -> dict[tuple[str, str], tuple[int, int
     return {(r.scope, r.period): (r.calls, r.attempts) for r in rows}
 
 
+@pytest.fixture(autouse=True)
+def observe_everything(monkeypatch):
+    """These are the observe-mode tests (B2): every scope observes, whatever the deployment default (the message
+    budget enforces by default since B3, tested in test_ai_guard_enforce.py)."""
+    for scope in ("message", "customer", "tenant"):
+        monkeypatch.setattr(settings, f"ai_guard_{scope}_mode", "observe")
+
+
 def modes(monkeypatch, mode: str) -> None:
     for scope in ("message", "customer", "tenant"):
         monkeypatch.setattr(settings, f"ai_guard_{scope}_mode", mode)
@@ -284,3 +292,21 @@ def test_metrics_show_reservations_and_over_limit(fashion, outbox, db, monkeypat
 def test_invalid_guard_settings_are_refused(bad):
     with pytest.raises(ValidationError):
         Settings(**bad)
+
+
+def test_counters_reconcile_with_the_ledger(fashion, electronics, outbox, monkeypatch):
+    """The documented reconciliation: per tenant and UTC hour, reserved calls >= llm_call rows in the ledger and
+    reserved attempts >= their attempts; equal when no call crashed between reservation and ledger write."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    replies = [httpx.Response(503, text="busy"), completion("Which size do you wear?", usage=(80, 9))]
+    set_provider_override(openai_provider(lambda req: replies.pop(0)))
+    fashion.send("black sneakers please")
+    set_provider_override(Looping())
+    electronics.send("samsung phone")
+    with SessionLocal() as s:
+        for business_id in (uuid.UUID(fashion.business_id), uuid.UUID(electronics.business_id)):
+            calls, attempts = s.execute(text(
+                "SELECT count(*), coalesce(sum(attempts), 0) FROM usage_events "
+                "WHERE business_id = :b AND kind = 'llm_call' AND occurred_at >= date_trunc('hour', now(), 'UTC')"),
+                {"b": business_id}).one()
+            assert by_scope(counters(scope="tenant", business_id=business_id))[("tenant", "hour")] == (calls, attempts)

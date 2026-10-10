@@ -316,6 +316,19 @@ MESSAGES: dict[str, dict[str, str]] = {
                              "Asante kwa ujumbe wako! Timu yetu itakujibu hapa tutakapofungua ({opening}).",
                              "شكرًا لرسالتك! سيرد عليك فريقنا هنا عند الافتتاح ({opening}).",
                              "شكرًا على رسالتك! ناس المحل حيردو عليك هنا لمن نفتح ({opening})."),
+    # The Runaway Conversation Guard stopped the assistant for this message (usage limit or repeated failures): no
+    # commerce fact, no claim that anything happened; the conversation is flagged for the shop team.
+    "ai_limited": _row("Sorry, our assistant can't answer right now. Your message is waiting for the shop team.",
+                       "Mbabarira, umufasha wacu ntashobora gusubiza ubu. Ubutumwa bwawe burategereje abakozi "
+                       "b'iduka.",
+                       "Désolé, notre assistant ne peut pas répondre pour le moment. Votre message attend l'équipe "
+                       "de la boutique.",
+                       "Samahani, msaidizi wetu hawezi kujibu kwa sasa. Ujumbe wako unasubiri timu ya duka.",
+                       "عذرًا، لا يستطيع مساعدنا الرد الآن. رسالتك بانتظار فريق المتجر.",
+                       "معليش، المساعد ما بقدر يرد هسع. رسالتك مستنية ناس المحل."),
+    "ask_person": _row(" You can also ask to talk to a person.", " Ushobora no gusaba kuvugana n'umuntu.",
+                       " Vous pouvez aussi demander à parler à quelqu'un.", " Unaweza pia kuomba kuongea na mtu.",
+                       " يمكنك أيضًا طلب التحدث مع شخص.", " ممكن كمان تطلب تتكلم مع زول."),
     "handoff_unavailable": _row("Our team isn't available on this chat right now.",
                                 "Abakozi bacu ntibaboneka kuri iki kiganiro ubu.",
                                 "Notre équipe n'est pas disponible sur ce chat pour le moment.",

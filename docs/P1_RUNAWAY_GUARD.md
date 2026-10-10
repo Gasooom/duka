@@ -1,6 +1,6 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1 and B2 implemented (§9); B3–B5 in
+Status: design reviewed and decisions D1–D6 approved 2026-10-10 (§10). B1–B3 implemented (§9); B4–B5 in
 progress; B6 (fairness) deferred (D5).
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
@@ -203,6 +203,34 @@ tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
   hourly sweep (`ops.purge_ai_usage_counters`); the ledger is never purged. Metrics:
   `duka_ai_guard_reserved_current_hour`, `duka_ai_guard_busiest_tenant_calls_current_hour`,
   `duka_ai_guard_over_limit_24h`, `duka_ai_guard_denied_24h`.
+
+**B3 — per-message budget, enforced by default** (`tests/test_ai_guard_enforce.py`):
+- `AI_GUARD_MESSAGE_MODE=enforce` is the default: one inbound message (its webhook event) may reserve, across all its
+  processing retries, what one processing attempt may use (1 summary + `AGENT_MAX_TOOL_ITERATIONS` calls, each with
+  up to `LLM_MAX_ATTEMPTS` HTTP attempts). The limit never stops a first attempt, only retries. Measured with the
+  failing-turn probe: 25 model calls for one message before, 6 now.
+- In enforce mode the upsert only increments a row that is under its limits. A refusal rolls the whole reservation
+  back (no call is made, nothing is counted), adds 1 to `denied` on the refusing row, logs `ai_guard.decision`
+  `refused` with the limit that was reached (`calls` or `attempts`), and raises `AIGuardDenied`.
+- A refused provider retry stops the adapter (`may_send_attempt` returns False); the ledger row records the attempts
+  really sent, then the turn is treated as limited.
+- A limited turn (`agent_runs.status = limited`, a `guard` step names scope, period and reason): the customer gets
+  the facts the tools already returned, else `ai_limited` (plus `ask_person` when handoff is on, else the shop's
+  phone); nothing is claimed. The conversation is flagged; the owner gets one `assistant_limited` alert per tenant
+  and UTC window (the hour for a message budget or an hourly limit, the day for a daily limit), decided by one atomic
+  claim on the tenant row (`alerted_at`). An alert claimed by a turn that then rolls back is not sent: at most once,
+  never twice. A limited turn does not count toward the two-strike handoff, and grounding is not applied to its
+  server text.
+- Fail closed (D1): a reservation that involves an enforcing scope and cannot be made or trusted is refused
+  (`store_unavailable`); a reservation with observe-only scopes goes ahead.
+- Deterministic commerce stays as it was (tested with every model call refused): the YES to the delivered summary
+  places exactly one order, a second YES places nothing, owner status updates reach the customer, the customer can
+  reach a person, no payment is recorded; a checkout summary prepared before the limit is still sent and still needs
+  the YES.
+- `python -m app.cli requeue-dead` clears the requeued events' message counters: an operator retry after a fix gets
+  a fresh budget, as it gets fresh attempts.
+- New customer texts `ai_limited` and `ask_person` exist in all six languages and wait for native review like the
+  rest of `app/i18n.py`.
 
 ## 10. Decisions (approved by the product owner, 2026-10-10)
 

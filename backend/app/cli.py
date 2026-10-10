@@ -59,20 +59,24 @@ def reset_password(args: argparse.Namespace) -> int:
 
 def requeue_dead(args: argparse.Namespace) -> int:
     """Retry dead-lettered inbound messages (e.g. after fixing the bug that killed them). Per-customer order is
-    kept because events are claimed by sequence; each gets a fresh set of attempts."""
+    kept because events are claimed by sequence; each gets a fresh set of attempts, and a fresh AI budget (its
+    Runaway Conversation Guard message counter is cleared: retrying on purpose, after a fix, is the operator's call)."""
     from datetime import datetime, timedelta, timezone
 
-    from sqlalchemy import update
+    from sqlalchemy import delete, update
 
-    from app.models import WebhookEvent
+    from app.models import AiUsageCounter, WebhookEvent
     since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     with session_scope() as db:
         stmt = update(WebhookEvent).where(WebhookEvent.status == "dead", WebhookEvent.updated_at >= since)
         if args.id:
             stmt = stmt.where(WebhookEvent.id == args.id)
-        n = db.execute(stmt.values(status="retry", attempts=0, next_attempt_at=datetime.now(timezone.utc),
-                                   last_error=None)).rowcount
-    print(f"requeued {n} dead event(s); the workers will process them now")
+        ids = list(db.scalars(stmt.values(status="retry", attempts=0, next_attempt_at=datetime.now(timezone.utc),
+                                          last_error=None).returning(WebhookEvent.id)))
+        if ids:
+            db.execute(delete(AiUsageCounter).where(AiUsageCounter.scope == "message",
+                                                    AiUsageCounter.subject_id.in_(ids)))
+    print(f"requeued {len(ids)} dead event(s) with a fresh AI budget; the workers will process them now")
     return 0
 
 

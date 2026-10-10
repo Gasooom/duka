@@ -59,8 +59,12 @@ class Settings(BaseSettings):
     # Runaway Conversation Guard (docs/P1_RUNAWAY_GUARD.md, app/services/ai_guard.py). Every real model call and every
     # provider HTTP attempt is reserved in ai_usage_counters before it is made: per inbound message (the webhook event,
     # across retries), per customer and per tenant, in fixed UTC hour/day buckets. Mode per scope: off = not counted;
-    # observe = counted, and reservations past a limit are logged (ai_guard.decision) but never refused.
-    ai_guard_message_mode: str = "observe"
+    # observe = counted, and reservations past a limit are logged (ai_guard.decision) but never refused; enforce =
+    # reservations past a limit are refused (the customer gets the facts already found or a safe reply, the
+    # conversation is flagged, the owner alerted once per window).
+    # The message budget enforces by default (its limit is derived from the turn limits below, so it never limits a
+    # first processing attempt, only retries); customer and tenant limits are chosen from observe-mode data first.
+    ai_guard_message_mode: str = "enforce"
     ai_guard_customer_mode: str = "observe"
     ai_guard_tenant_mode: str = "observe"
     # Per inbound message, across retries. 0 = what one processing attempt may use: 1 summary call +
@@ -176,8 +180,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _ai_guard_settings(self) -> "Settings":
-        modes = {"off", "observe"}  # enforcement is added scope by scope (docs/P1_RUNAWAY_GUARD.md, B3-B5)
-        for name in ("ai_guard_message_mode", "ai_guard_customer_mode", "ai_guard_tenant_mode"):
+        # Enforcement is added scope by scope (docs/P1_RUNAWAY_GUARD.md, B3-B5).
+        allowed = {"message": {"off", "observe", "enforce"}, "customer": {"off", "observe"},
+                   "tenant": {"off", "observe"}}
+        for scope, modes in allowed.items():
+            name = f"ai_guard_{scope}_mode"
             if getattr(self, name) not in modes:
                 raise ValueError(f"{name.upper()} must be one of {sorted(modes)}")
         for name, value in self.model_dump().items():
