@@ -10,7 +10,7 @@ from app.i18n import t
 from app.models import Business, Payment
 from app.services.commerce_service import OrderService, money
 from app.services.conversation_service import ConversationService
-from app.services.messaging_service import send_to_customer
+from app.services.messaging_service import notify_owner, send_to_customer
 from app.services.payment_service import PaymentService
 from app.workflows.handoff import conversation_language
 
@@ -60,13 +60,22 @@ def notify_payment_result(db: Session, business_id: uuid.UUID, payment_id: uuid.
     payment = PaymentService(db, business_id).payments.get(payment_id)
     order = OrderService(db, business_id).get(payment.order_id)
     business = db.get(Business, business_id)
+    refund = payment.status == "successful" and order.status == "cancelled"
+    if refund:  # the order will not be delivered: the owner must refund (the payment is audited by PaymentService)
+        notify_owner(db, business_id, "payment_for_cancelled_order",
+                     f"⚠️ {order.currency} {money(payment.amount)} was paid for order {order.order_number}, which is "
+                     "cancelled. Refund the customer.",
+                     entity_type="order", entity_id=order.id)
     if not order.conversation_id:
         return
     conv = ConversationService(db, business_id).repo.get(order.conversation_id)
     if conv is None:
         return
     lang = conversation_language(conv, business)
-    if payment.status == "successful":
+    if refund:  # never "PAID ... on the way" for an order that will not come
+        text = t("manual_payment_received", lang, number=order.order_number,
+                 amount=f"{order.currency} {money(payment.amount)}") + t("refund_note", lang)
+    elif payment.status == "successful":
         text = t("provider_paid", lang, number=order.order_number, amount=f"{order.currency} {money(payment.amount)}",
                  shop=business.name)
     else:

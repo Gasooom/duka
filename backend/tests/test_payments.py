@@ -186,6 +186,12 @@ def test_payment_for_a_cancelled_order_is_flagged(fashion, mock_provider, outbox
     d = _detail(fashion, order)
     assert d["status"] == "cancelled" and d["payment_status"] == "paid"
     assert "payment.received_for_cancelled_order" in [e["action"] for e in d["audit"]]
+    # The owner is told to refund, and the customer is never told that a cancelled order is paid and on its way.
+    alerts = [n for n in fashion.get("/api/dashboard/notifications").json()
+              if n["kind"] == "payment_for_cancelled_order"]
+    assert len(alerts) == 1 and order["order_number"] in alerts[0]["body"] and "Refund the customer" in alerts[0]["body"]
+    told = [body for to, body in outbox.sent if to == NUMBER][-1]
+    assert "We'll contact you about your refund" in told and "on the way" not in told and "PAID" not in told
 
 
 # ---------------------------------------------------------------- MTN MoMo (real client, mocked HTTP)
