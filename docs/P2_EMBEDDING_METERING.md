@@ -1,8 +1,9 @@
 # P2 — Embedding usage metering: design
 
-Roadmap: `docs/ROADMAP.md` Phase C1 (Phase 4 P2). Status: implemented and tested locally on 2026-10-10 (§6: what was
-built, findings, what is not validated). It only measures: no reply, limit or merchant workflow changes, so it
-needed no product decision. Code references are to the P1-complete tree (`f7bc76a`).
+Roadmap: `docs/ROADMAP.md` Phase C1 (Phase 4 P2). Status: implemented, tested and CI-verified on 2026-10-10
+(`0f82acb`, GitHub Actions run 38063154390; §6: what was built, findings, what is not validated). It only measures:
+no reply, limit or merchant workflow changes, so it needed no product decision. Code references are to the
+P1-complete tree (`f7bc76a`).
 
 ## 1. Goal
 
@@ -86,9 +87,10 @@ Findings:
 1. **A CSV import re-embeds every product it updates, one request each, whether or not its text changed.** For an
    existing SKU, `import_csv` calls `update()` with `category` always present, and `update()` re-embeds whenever
    `category` is given. Re-importing a catalog of n existing products therefore makes n requests to a paid embedder.
-   This predates P2; P2 makes it visible (`product` rows). Proposed fix, not part of P2 because it changes when
-   embeddings are recomputed: re-embed only when the embedding text changed, and batch an import's updates into one
-   request (Phase C or D).
+   This predates P2; P2 makes it visible (`product` rows). It is not a free fix: re-importing the catalog is also
+   the documented way to re-embed it after switching embedders (README, "Semantic embeddings"), so skipping
+   unchanged text needs another way to do that first (for example a re-embed command, or recording which model made
+   each vector). Then: re-embed only changed text and batch an import's updates into one request (Phase C or D).
 2. **Rounding.** A row's cost is stored in millionths of the currency, rounded half to even. A short request, such as
    a search query, can cost less than half a millionth and is then stored as 0, with its tokens kept. Totals (P3)
    should be priced from summed tokens per model and price version, not by adding rounded per-row costs.

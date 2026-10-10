@@ -88,13 +88,13 @@ independently · **Q2** AI answers are accurate and safe (approved thresholds, n
 failure (measured targets).
 
 Status (update with evidence; values: NOT STARTED · IN PROGRESS · LOCALLY VERIFIED · CI VERIFIED · EXTERNALLY
-VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `f3fa3e4`.
+VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `0f82acb`.
 
 | Phase | Scope | Status |
 |---|---|---|
 | A | Baseline, risk register, existing guarantees kept | IN PROGRESS (register in `docs/ROADMAP.md` §6) |
 | B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | CI VERIFIED — code complete: B1 deadlines (`0ac995e`), B2 counters + observe (`a3493d3`), B3 per-message budget enforced by default (`d11de7d`), B4 per-customer limits (`a12b72c`), B5 tenant limits + operator overrides (`f3fa3e4`), each CI-green; B6 deferred (D5). External validation BLOCKED: customer/tenant limits not chosen (observe data), no real provider or traffic |
-| C | Usage/cost visibility: embedding metering, monthly aggregation, cost model, quotas, usage UI; billing last | IN PROGRESS — C1 embedding metering (`docs/P2_EMBEDDING_METERING.md`) LOCALLY VERIFIED; P0 metering CI VERIFIED; no prices |
+| C | Usage/cost visibility: embedding metering, monthly aggregation, cost model, quotas, usage UI; billing last | IN PROGRESS — C1 embedding metering CI VERIFIED (`0f82acb`; no real provider yet); C2 monthly usage design proposed (`docs/P3_MONTHLY_USAGE.md`), decisions C2-D1–D3 pending; P0 metering CI VERIFIED; no prices |
 | D | Merchant operations and inventory reliability (audit, then gaps) | NOT STARTED (existing workflows CI VERIFIED) |
 | E | AI and multilingual validation | IN PROGRESS — offline/adversarial CI VERIFIED; real model LOCALLY VERIFIED (dev key); production model, thresholds, native review BLOCKED |
 | F | Production infrastructure and security | LOCALLY VERIFIED (rehearsal); host, domain, monitor, off-site backup BLOCKED |

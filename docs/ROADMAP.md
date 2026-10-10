@@ -83,7 +83,8 @@ acceptance criteria (AC), verification, and external needs.
 C1 embedding metering · C2 monthly usage aggregation (real vs simulated, unknown and unpriced kept distinct) ·
 C3 tenant cost model (known prices + documented infrastructure allocation; estimates labelled) · C4 quotas and spend
 alerts · C5 merchant usage UI (tenant-isolated) · C6 billing, deferred until C2–C4 are validated.
-Needs: provider price lists or invoices (C3), a pricing/revenue decision (C3, C6).
+Needs: provider price lists or invoices (C3), a pricing/revenue decision (C3, C6). Status: C1 CI-verified
+(`0f82acb`); C2's design is proposed in `docs/P3_MONTHLY_USAGE.md` with decisions C2-D1–D3 pending.
 
 ### Phase D — Merchant operations and inventory reliability
 Audit first, then close material gaps only: inventory consistency and discrepancy handling, unpaid-order expiry and
@@ -129,7 +130,7 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 | No prices loaded; economics unknown | High (for viability) | OPERATIONS › Usage metering | C1–C3 |
 | Noisy neighbour: one tenant can occupy the shared workers | Medium | F6 (`inbound.py` claim order) | B6 / F |
 | Unpaid orders hold stock indefinitely | Medium | README › Future work | D |
-| A CSV import re-embeds every updated product with its own request, changed or not (cost with a paid embedder) | Low | P2 finding 1 (`docs/P2_EMBEDDING_METERING.md` §6); visible in the ledger as `product` rows | C or D: re-embed only changed text, batch an import's updates |
+| A CSV import re-embeds every updated product with its own request, changed or not (cost with a paid embedder) | Low | P2 finding 1 (`docs/P2_EMBEDDING_METERING.md` §6); visible in the ledger as `product` rows | C or D: first another way to re-embed a catalog after switching embedders (re-importing is the documented one), then re-embed only changed text and batch an import's updates |
 | Multi-instance behaviour unvalidated | Medium | README › Future work | F |
 
 ## 7. Rollback and release discipline

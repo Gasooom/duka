@@ -1,8 +1,9 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-10 (adds Phase 4 P1, the Runaway Conversation Guard, code complete; earlier the same day:
-production hardening phases 1–3, Render preparation and Phase 4 P0 usage metering; M3's key status reconciled with
-`docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a proposal).
+Last updated: 2026-10-10 (adds Phase 4 P1, the Runaway Conversation Guard, code complete, and Phase 4 P2, embedding
+usage metering; earlier the same day: production hardening phases 1–3, Render preparation and Phase 4 P0 usage
+metering; M3's key status reconciled with `docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a
+proposal).
 Previous update: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
@@ -558,6 +559,24 @@ Not validated, or still open:
 - Tokens and money are not limited (D6; money needs prices, Phase C); fairness between tenants in the worker claim
   (B6) is deferred (D5).
 
+### Phase 4 P2 — Embedding usage metering · COMPLETE (code, CI) · real provider not validated
+
+`0f82acb` (`feat(usage): meter paid embeddings requests in the usage ledger (P2, migration 0012)`); CI run
+`38063154390` (#15, 5 jobs green). Design and findings: `docs/P2_EMBEDDING_METERING.md`.
+- One `embedding` row per request to a paid embeddings provider, for the tenant whose catalog, knowledge or search it
+  served: the texts as `units`, the reported tokens and served model, the request's HTTP attempts, success or error;
+  written in its own transaction. Nothing for the free hash embedder, evaluation runs or a request never sent.
+- Prices: an optional `embeddings` section in the price list; none shipped.
+- Migration `0012` (CHECK constraints only; downgrade refused while embedding rows exist). A new test compares the
+  model's CHECK constraints with the migrated ones, which `alembic check` does not do.
+- Tests: `test_embedding_metering.py`, `test_migration_0012.py`; 747 backend tests collected. Locally: 746 passed in
+  the full run, and the 76 tests of the modules changed after it passed again; offline evals 65/65 with both
+  providers, prompt fingerprint unchanged.
+
+Not validated: no real embeddings provider has been called (mocked endpoint); migrations `0011` and `0012` are not
+applied to the development database (still at `0010`); nothing has been deployed. Finding: a CSV import re-embeds
+every product it updates with its own request (`docs/ROADMAP.md` §6).
+
 ### Phase 4 — remaining slices · Proposed — awaiting product approval
 
 Recorded on 2026-10-10 as a proposed product plan. It is not a record of work done, none of these slices exists in
@@ -571,8 +590,8 @@ still needs its open product decisions approved before it is implemented.
 |---|---|
 | P0 | Completed: AI and WhatsApp usage metering (section above). |
 | P1 — Runaway conversation guard | Code complete (section above). Proposed as: tenant-scoped limits that stop runaway agent loops and bound AI spend. Define safe defaults, explicit failure behaviour and tests before implementation. |
-| P2 — Embedding usage metering | Measure embedding usage per tenant and avoid double-counting. |
-| P3 — Monthly usage reporting | Aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
+| P2 — Embedding usage metering | Code complete (section above). Proposed as: measure embedding usage per tenant and avoid double-counting. |
+| P3 — Monthly usage reporting | Design proposed in `docs/P3_MONTHLY_USAGE.md`, decisions pending. Aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
 | P4 — Tenant cost model | Known provider costs and a clearly documented infrastructure allocation per tenant. Never invent missing prices or present estimates as exact costs. |
 | P5 — Quotas and spend alerts | Tenant-level thresholds and actionable alerts, built on validated usage and cost data. |
 | P6 — Dashboard usage UI | Monthly usage, known costs, unpriced usage, quotas and alerts, with strict tenant isolation. |
