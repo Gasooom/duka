@@ -166,7 +166,7 @@ or phone numbers.
 B1 deadlines + facts kept (no schema) → B2 table + observe mode → B3 enforce per message → B4 per customer → B5 per
 tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
 
-**B1 — implemented** (`tests/test_turn_deadline.py`):
+**B1 — implemented, CI VERIFIED** (`0ac995e`, GitHub Actions run 38043387589; `tests/test_turn_deadline.py`):
 - The turn deadline lives in a context variable (`app/core/deadline.py`) set by `AgentEngine.run`, so work a tool
   starts sees it too. The deadline is checked before every tool call, not only before model calls; skipped calls are
   recorded as a `deadline` step. The summary call takes at most `min(10 s, time left)` and is skipped (deterministic

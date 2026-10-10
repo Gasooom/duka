@@ -88,12 +88,12 @@ independently · **Q2** AI answers are accurate and safe (approved thresholds, n
 failure (measured targets).
 
 Status (update with evidence; values: NOT STARTED · IN PROGRESS · LOCALLY VERIFIED · CI VERIFIED · EXTERNALLY
-VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `e1a18c2`.
+VALIDATED · BLOCKED · ACCEPTED). Last verified 2026-10-10 at `0ac995e`.
 
 | Phase | Scope | Status |
 |---|---|---|
 | A | Baseline, risk register, existing guarantees kept | IN PROGRESS (register in `docs/ROADMAP.md` §6) |
-| B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | IN PROGRESS — B1 (turn deadline over tools and embeddings) LOCALLY VERIFIED; B2–B6 wait for decisions D1–D6 |
+| B | P1 Runaway Conversation Guard (`docs/P1_RUNAWAY_GUARD.md`) | IN PROGRESS — B1 (turn deadline over tools and embeddings) CI VERIFIED (`0ac995e`, run 38043387589); B2–B6 wait for decisions D1–D6 |
 | C | Usage/cost visibility: embedding metering, monthly aggregation, cost model, quotas, usage UI; billing last | NOT STARTED (P0 metering CI VERIFIED; no prices) |
 | D | Merchant operations and inventory reliability (audit, then gaps) | NOT STARTED (existing workflows CI VERIFIED) |
 | E | AI and multilingual validation | IN PROGRESS — offline/adversarial CI VERIFIED; real model LOCALLY VERIFIED (dev key); production model, thresholds, native review BLOCKED |
