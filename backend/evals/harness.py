@@ -33,6 +33,7 @@ from app.db.base import Base
 from app.integrations.whatsapp.adapters import SendResult, WhatsAppAdapter, set_adapter_override
 from app.integrations.whatsapp.parser import build_text_webhook
 from app.models import AgentRun, Business, Cart, Conversation, Customer, Message, Order, Product
+from app.services import embeddings
 from app.services.business_service import BusinessConfigService, register_business
 from app.services.commerce_service import CartService, CheckoutService, OrderService
 from app.services.conversation_service import ConversationService, CustomerService
@@ -316,6 +317,7 @@ class Harness:
         provider = provider_for(self.provider_name)
         provider.metered = False  # evaluation runs are platform activity, never a tenant's usage (usage_events)
         set_provider_override(provider)
+        embeddings.set_metering(False)  # the same for a paid embedder's requests
         try:
             for case in cases:
                 if case.get("requires_llm") and not include_llm_cases:
@@ -328,6 +330,7 @@ class Harness:
         finally:
             set_provider_override(None)
             set_adapter_override(None)
+            embeddings.set_metering(True)
         return results
 
     def run_case(self, case: dict) -> CaseResult:

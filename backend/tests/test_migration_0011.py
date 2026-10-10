@@ -32,5 +32,5 @@ def test_0011_adds_and_removes_only_the_counters(scratch):  # noqa: F811
                      {"b": BUSINESS})
     command.downgrade(cfg, "0010")  # allowed: the counters are operational, not history
     assert version(eng) == "0010" and "ai_usage_counters" not in tables(eng) and ledger(eng) == before
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0011")
     assert version(eng) == "0011" and ledger(eng) == before

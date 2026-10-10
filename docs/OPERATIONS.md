@@ -54,7 +54,22 @@ turn that made the call fails and is retried, and when conversations, customers 
 deleted later. `agent_runs.llm_calls` is not a usage figure: it also counts the offline rules engine. Nothing is
 recorded for the rules engine, evaluation runs (`evals/`) or `python -m app.cli llm-check`.
 
-**WhatsApp** (migration 0010; embeddings are not metered yet):
+**Embeddings** (`embedding`, migration 0012): every request to a paid embeddings provider
+(`EMBEDDING_PROVIDER=openai_compat`), with `source_type`: `product` (a product created, or an edit that sets its
+name, description or category), `product_import` (one request for all the new products of a CSV import),
+`knowledge_document` (one request for all of a document's chunks), `product_search` and `knowledge_search` (the
+assistant's search tools and the dashboard's searches; a product search with a price limit that finds nothing
+searches again without it, a second request). One row per request, never per text: `units` is the number of texts
+in it, `input_tokens` what the provider reported (NULL when it reports nothing), `attempts` the HTTP attempts of that
+one request (its retries are not new rows), the served and the configured model, `success` or `error`; key
+`emb:<uuid>`. Each row is written in its own transaction right after the request, so a rolled-back import, document
+or turn keeps it. A failed request is recorded, and then the import or document fails as before and a search ranks
+by words alone. Nothing is recorded for the default `hash` embedder (offline, free), for evaluation runs (as for
+their model calls), or for a request that was never sent (too little of the AI turn left). A CSV import re-embeds
+every product it updates (an existing SKU), one `product` request each, even when the product's text did not change
+(`docs/P2_EMBEDDING_METERING.md` §6). Migration 0012 cannot be downgraded once embedding rows exist; keep it.
+
+**WhatsApp** (migration 0010):
 
 | kind | one row per | key (unique per shop) | status |
 |---|---|---|---|
@@ -113,6 +128,7 @@ and the version it was recorded with; earlier rows are never re-priced).
  "llm": [{"provider": "openai_compat", "model": "<model>", "input_per_1m": "<price>", "output_per_1m": "<price>"},
          {"provider": "openai_compat", "model": "<model name prefix>", "match": "prefix",
           "input_per_1m": "<price>", "output_per_1m": "<price>"}],
+ "embeddings": [{"provider": "openai_compat", "model": "<embedding model>", "input_per_1m": "<price>"}],
  "whatsapp": {"billable_statuses": ["success"],
               "templates": [{"name": "<approved template name>", "category": "<category>"}],
               "rules": [{"markets": ["<country calling code>"], "message_kind": "free_form",
@@ -125,6 +141,13 @@ AI prices are per 1M tokens (strings or numbers; both are read as exact decimals
 provider says it served, else by the model Duka asked for; an exact entry beats a prefix entry and the longest prefix
 wins. Without the file, or for a model it does not list, the call is still recorded, with `cost_micros` NULL
 (unpriced). A failed call costs 0.
+
+Embeddings prices (`embeddings`, optional) are per 1M input tokens and matched the same way (served model first,
+exact before prefix, per provider; `llm` entries never price an embeddings request). A request whose provider
+reported no tokens is unpriced; a failed request costs 0. Every cost is stored in millionths of the currency,
+rounded half to even per row: a short request (a search query) can cost less than half a millionth and is then
+stored as 0 while its tokens are kept, so price a total from the summed tokens per model and `price_version`, not
+by adding rounded per-row costs.
 
 WhatsApp prices are per message, in the file's `currency`, chosen by market, kind and (for a template) category. The
 category is the operator's: declare each template's category under `templates`; a template that is not declared, a

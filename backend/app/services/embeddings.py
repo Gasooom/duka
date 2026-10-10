@@ -4,28 +4,49 @@
   trigrams). It is lexical, not semantic, but makes pgvector retrieval work with no API key.
 - OpenAICompatEmbedder: any OpenAI-compatible /embeddings endpoint (OpenAI, Gemini's
   OpenAI-compatible endpoint, etc.), requesting `dimensions=384` so it matches the schema.
+
+Services embed through embed_texts and query_vector, which record every request of an embedder that costs money
+(`metered`) in the usage ledger, for the tenant it served: one event per request, whatever its outcome
+(docs/P2_EMBEDDING_METERING.md).
 """
 import hashlib
 import math
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
 
 import httpx
+from sqlalchemy.engine import Connection, Engine
 
 from app.core.config import settings
 from app.core.deadline import remaining as turn_time_left
 from app.core.errors import ExternalServiceError
 from app.core.logging import get_logger, log_event
+from app.services import usage_service
 
 logger = get_logger(__name__)
 _TOKEN = re.compile(r"[a-z0-9]+")
+_metering = True  # switched off by evaluation runs only (set_metering)
+
+
+@dataclass
+class EmbedResult:
+    """One embeddings request: its vectors, or the error that ended it, and what it used."""
+    vectors: list[list[float]] | None
+    attempts: int = 0  # HTTP attempts sent for it (0: nothing was sent)
+    input_tokens: int | None = None  # as the provider reports them; None = not reported
+    model: str | None = None  # served, as the provider reports it
+    error: Exception | None = None
 
 
 class Embedder(ABC):
     name: str
     dim: int
+    model: str | None = None
+    metered = False  # True: every request costs money and is recorded in the usage ledger (embed_texts)
 
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]: ...
@@ -69,6 +90,7 @@ class HashingEmbedder(Embedder):
 
 class OpenAICompatEmbedder(Embedder):
     name = "openai_compat"
+    metered = True
     MAX_ATTEMPTS = 3
     TIMEOUT_SECONDS = 20.0  # per request; inside an AI turn also capped by the time left in it
     MIN_ATTEMPT_SECONDS = 1.0
@@ -83,15 +105,24 @@ class OpenAICompatEmbedder(Embedder):
         self.dim = dim
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Up to MAX_ATTEMPTS requests, retrying 429/5xx/network errors with exponential backoff. Inside an AI turn
-        (a search tool) every request and pause fits in what is left of the turn budget; when too little is left
-        the search fails like an outage instead of stretching the turn."""
+        result = self.embed_counted(texts)
+        if result.error is not None:
+            raise result.error
+        return result.vectors
+
+    def embed_counted(self, texts: list[str]) -> EmbedResult:
+        """One embeddings request: up to MAX_ATTEMPTS HTTP attempts, retrying 429/5xx/network errors with exponential
+        backoff. Inside an AI turn (a search tool) every attempt and pause fits in what is left of the turn budget;
+        when too little is left the search fails like an outage instead of stretching the turn. Never raises: a
+        failure is returned with the attempts it made (embed() raises it), so that it can be metered too."""
         last_exc: Exception | None = None
+        attempts = 0
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             left = turn_time_left()
             if left is not None and left < self.MIN_ATTEMPT_SECONDS:
                 last_exc = last_exc or "no time left in the turn budget"
                 break
+            attempts = attempt
             try:
                 r = httpx.post(
                     f"{self.base_url}/embeddings",
@@ -101,26 +132,65 @@ class OpenAICompatEmbedder(Embedder):
                 )
                 if r.status_code not in (429, 500, 502, 503, 504):
                     r.raise_for_status()
-                    data = sorted(r.json()["data"], key=lambda d: d["index"])
-                    return [d["embedding"] for d in data]
+                    body = r.json()
+                    data = sorted(body["data"], key=lambda d: d["index"])
+                    usage = body.get("usage")
+                    usage = usage if isinstance(usage, dict) else {}
+                    tokens = usage.get("prompt_tokens")
+                    return EmbedResult([d["embedding"] for d in data], attempts=attempts,
+                                       input_tokens=tokens if tokens is not None else usage.get("total_tokens"),
+                                       model=body.get("model"))
                 last_exc = ExternalServiceError(f"embeddings HTTP {r.status_code}")
             except httpx.TransportError as exc:
                 last_exc = exc
+            except Exception as exc:  # refused (4xx) or an unreadable answer: not retried, raised by embed() as before
+                return EmbedResult(None, attempts=attempts, error=exc)
             if attempt < self.MAX_ATTEMPTS:
                 pause = 0.5 * 2 ** (attempt - 1)
                 left = turn_time_left()
                 if left is not None and left - pause < self.MIN_ATTEMPT_SECONDS:
                     break
                 time.sleep(pause)
-        raise ExternalServiceError(f"Embedding request failed: {last_exc}")
+        return EmbedResult(None, attempts=attempts,
+                           error=ExternalServiceError(f"Embedding request failed: {last_exc}"))
 
 
-def query_vector(query: str) -> list[float] | None:
+def set_metering(enabled: bool) -> None:
+    """Evaluation runs switch metering off while they run (evals/harness.py): like their model calls and WhatsApp
+    sends, their embeddings requests are platform activity, never a tenant's usage. The requests are still made."""
+    global _metering
+    _metering = enabled
+
+
+def embed_texts(bind: Engine | Connection, business_id: uuid.UUID, texts: list[str], *, source_type: str,
+                source_id: uuid.UUID | None = None) -> list[list[float]]:
+    """The embeddings of `texts`, in one request. A request of a metered embedder is recorded in the usage ledger
+    for `business_id` (the calling service's tenant, never from input) whether it succeeded or not, in its own
+    transaction, so a rollback of the caller never removes it; a recording failure is logged and never breaks the
+    caller. Raises what Embedder.embed raises."""
+    embedder = get_embedder()
+    if not (embedder.metered and _metering):
+        return embedder.embed(texts)
+    key = f"emb:{uuid.uuid4()}"  # made before the request: one request, one event
+    result = embedder.embed_counted(texts)
+    if result.attempts:  # nothing was sent (no time left in the turn): nothing was used
+        usage_service.record_embedding(
+            bind, business_id, idempotency_key=key, source_type=source_type, source_id=source_id,
+            provider=embedder.name, model=result.model, configured_model=embedder.model,
+            status="success" if result.error is None else "error", units=len(texts),
+            input_tokens=result.input_tokens, attempts=result.attempts)
+    if result.error is not None:
+        raise result.error
+    return result.vectors
+
+
+def query_vector(query: str, *, bind: Engine | Connection, business_id: uuid.UUID,
+                 source_type: str) -> list[float] | None:
     """The embedding of a search query, or None when the embeddings service is unavailable (outage, or no time left
     in the AI turn). Searches then rank by words alone: vector similarity only ranks, never admits (CLAUDE.md rule
-    11), so the results stay correct and the customer never sees a technical error."""
+    11), so the results stay correct and the customer never sees a technical error. Metered like embed_texts."""
     try:
-        return get_embedder().embed_one(query)
+        return embed_texts(bind, business_id, [query], source_type=source_type)[0]
     except (ExternalServiceError, httpx.HTTPError) as exc:  # retries exhausted, no time left, or a 4xx (bad key)
         log_event(logger, "embeddings.unavailable", 30, operation="embeddings", status="degraded", error=str(exc)[:300])
         return None

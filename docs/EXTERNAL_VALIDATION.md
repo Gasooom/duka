@@ -129,6 +129,11 @@ Use a test number and test phones first, on staging or before the merchant goes 
       - no correct reply rejected (look at the `ungrounded` turns);
       - no false order, payment, delivery or cart claim sent.
   - **Then:** update the baseline with `--update-baseline` only after that review.
+- [ ] **LLM — embeddings usage** (only if the pilot sets `EMBEDDING_PROVIDER=openai_compat`).
+  - **Do:** add one product in the dashboard and run one product search (a customer message, or the dev
+    simulator), then read the shop's `usage_events` rows of kind `embedding` (`docs/OPERATIONS.md` › Usage metering).
+  - **Pass:** one row per request (`product`, then `product_search`), `status` success, `model` the served model.
+  - **Record:** whether the provider reports `input_tokens`. If it does not, embeddings rows stay unpriced.
 
 ## 4. Before deployment (production host)
 

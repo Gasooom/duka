@@ -17,7 +17,7 @@ from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.models import Business, InventoryMovement, Product, ProductCategory, User
 from app.repositories.repos import CategoryRepo, InventoryRepo, ProductRepo, SettingsRepo
 from app.services import audit_service
-from app.services.embeddings import get_embedder, query_vector
+from app.services.embeddings import embed_texts, query_vector
 
 STOPWORDS = {
     "a", "an", "the", "i", "im", "i'm", "me", "my", "we", "you", "your", "do", "does", "have", "has", "any", "some",
@@ -149,8 +149,9 @@ class ProductService:
 
     # CRUD -------------------------------------------------------------------
     def _embed(self, p: Product) -> None:
-        p.embedding = get_embedder().embed_one(
-            product_embedding_text(p.name, p.category.name if p.category else None, p.description))
+        text_ = product_embedding_text(p.name, p.category.name if p.category else None, p.description)
+        p.embedding = embed_texts(self.db.get_bind(), self.business_id, [text_], source_type="product",
+                                  source_id=p.id)[0]
 
     def create(self, data: dict[str, Any], *, embed: bool = True) -> Product:
         price = Decimal(str(data["price"]))
@@ -296,7 +297,8 @@ class ProductService:
         )
         all_forms = sorted({f for fs in forms.values() for f in fs})
         tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{f}:*" for f in all_forms))
-        vec = query_vector(query)  # None: embeddings unavailable, rank by words alone
+        vec = query_vector(query, bind=self.db.get_bind(), business_id=self.business_id,
+                           source_type="product_search")  # None: embeddings unavailable, rank by words alone
         vscore = 1 - Product.embedding.cosine_distance(vec) if vec is not None else literal(0.0)
         score = (func.ts_rank(doc, tsq) * 2 + func.coalesce(vscore, 0)).label("score")
 
@@ -405,8 +407,9 @@ class ProductService:
         # Batch-embed newly created products (one embedding call instead of N).
         new_products = self.products.list(where=[Product.embedding.is_(None)])
         if new_products:
-            vecs = get_embedder().embed([product_embedding_text(p.name, p.category.name if p.category else None,
-                                                                p.description) for p in new_products])
+            vecs = embed_texts(self.db.get_bind(), self.business_id,
+                               [product_embedding_text(p.name, p.category.name if p.category else None, p.description)
+                                for p in new_products], source_type="product_import")
             for p, v in zip(new_products, vecs):
                 p.embedding = v
         self.db.flush()

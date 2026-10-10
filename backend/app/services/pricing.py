@@ -10,6 +10,9 @@ recorded, only unpriced (cost_micros NULL).
         {"provider": "openai_compat", "model": "<model name prefix>", "match": "prefix",
          "input_per_1m": "<price>", "output_per_1m": "<price>"}
       ],
+      "embeddings": [
+        {"provider": "openai_compat", "model": "<embedding model>", "input_per_1m": "<price>"}
+      ],
       "whatsapp": {
         "billable_statuses": ["success"],
         "templates": [{"name": "<approved template name>", "category": "<category>"}],
@@ -25,6 +28,10 @@ Prices are per 1M tokens, in `currency`, as JSON strings or numbers; both are re
 `version` is stored on every priced event, so a later price change never rewrites what was recorded. `match` is
 "exact" (default) or "prefix". A call is priced by the model the provider says it served, else by the model Duka
 asked for; per model, an exact entry wins over prefix entries and the longest prefix over shorter ones.
+
+Embeddings (`embeddings`, optional): the same matching, one price per 1M input tokens. An embeddings request is
+priced from the input tokens the provider reported; unpriced when it reported none or no entry matches; a failed
+request costs 0 (as for model calls).
 
 WhatsApp (`whatsapp`, optional): a price per message, in `currency`, chosen by the recipient's market (the country
 calling code stored on the event, e.g. "250"), the kind of message and, for a template, its category. Duka does not
@@ -59,6 +66,15 @@ class LLMPrice(BaseModel):
     match: Literal["exact", "prefix"] = "exact"
     input_per_1m: Decimal = Field(ge=0)
     output_per_1m: Decimal = Field(ge=0)
+
+
+class EmbeddingPrice(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: str = Field(min_length=1, max_length=40)
+    model: str = Field(min_length=1, max_length=100)
+    match: Literal["exact", "prefix"] = "exact"
+    input_per_1m: Decimal = Field(ge=0)
 
 
 class WhatsAppTemplate(BaseModel):
@@ -119,26 +135,36 @@ class PriceList(BaseModel):
     version: str = Field(min_length=1, max_length=40)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     llm: tuple[LLMPrice, ...] = ()
+    embeddings: tuple[EmbeddingPrice, ...] = ()
     whatsapp: WhatsAppPricing | None = None
 
     @model_validator(mode="after")
     def _one_price_per_entry(self) -> "PriceList":
-        seen: set[tuple[str, str, str]] = set()
-        for p in self.llm:
-            if (p.provider, p.model, p.match) in seen:
-                raise ValueError(f"llm: {p.provider} {p.match} {p.model!r} is listed twice")
-            seen.add((p.provider, p.model, p.match))
+        for section, entries in (("llm", self.llm), ("embeddings", self.embeddings)):
+            seen: set[tuple[str, str, str]] = set()
+            for p in entries:
+                if (p.provider, p.model, p.match) in seen:
+                    raise ValueError(f"{section}: {p.provider} {p.match} {p.model!r} is listed twice")
+                seen.add((p.provider, p.model, p.match))
         return self
 
     def llm_price(self, provider: str | None, model: str | None) -> LLMPrice | None:
-        if not provider or not model:
-            return None
-        own = [p for p in self.llm if p.provider == provider]
-        exact = next((p for p in own if p.match == "exact" and p.model == model), None)
-        if exact is not None:
-            return exact
-        return max((p for p in own if p.match == "prefix" and model.startswith(p.model)),
-                   key=lambda p: len(p.model), default=None)
+        return _best(self.llm, provider, model)
+
+    def embedding_price(self, provider: str | None, model: str | None) -> EmbeddingPrice | None:
+        return _best(self.embeddings, provider, model)
+
+
+def _best(entries, provider: str | None, model: str | None):
+    """The entry for (provider, model): an exact match, else the longest matching prefix."""
+    if not provider or not model:
+        return None
+    own = [p for p in entries if p.provider == provider]
+    exact = next((p for p in own if p.match == "exact" and p.model == model), None)
+    if exact is not None:
+        return exact
+    return max((p for p in own if p.match == "prefix" and model.startswith(p.model)),
+               key=lambda p: len(p.model), default=None)
 
 
 @dataclass(frozen=True)
@@ -196,6 +222,24 @@ def llm_call_price(*, provider: str | None, model: str | None, configured_model:
     with localcontext() as ctx:
         ctx.prec = 60
         micros = input_tokens * entry.input_per_1m + output_tokens * entry.output_per_1m
+        return Price(int(micros.to_integral_value(rounding=ROUND_HALF_EVEN)), price_list.currency, price_list.version)
+
+
+def embedding_request_price(*, provider: str | None, model: str | None, configured_model: str | None,
+                            input_tokens: int | None, failed: bool) -> Price:
+    """Estimated cost of one embeddings request from the input tokens the provider reported (see llm_call_price for
+    the unpriced and failed rules, which are the same)."""
+    price_list = current_price_list()
+    if price_list is None:
+        return UNPRICED
+    entry = price_list.embedding_price(provider, model) or price_list.embedding_price(provider, configured_model)
+    if entry is None or (not failed and input_tokens is None):
+        return Price(price_version=price_list.version)
+    if failed:
+        return Price(0, price_list.currency, price_list.version)
+    with localcontext() as ctx:
+        ctx.prec = 60
+        micros = input_tokens * entry.input_per_1m
         return Price(int(micros.to_integral_value(rounding=ROUND_HALF_EVEN)), price_list.currency, price_list.version)
 
 

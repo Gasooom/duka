@@ -1,4 +1,5 @@
-"""Usage metering: writes the usage ledger (models/usage.py, usage_events): real AI model calls and WhatsApp traffic.
+"""Usage metering: writes the usage ledger (models/usage.py, usage_events): real AI model calls, paid embeddings
+requests and WhatsApp traffic.
 
 Every event is written in its OWN short transaction, on its own connection, right after the external call it
 records: the cost was incurred whatever happens next, so the event must survive a rollback of the caller's
@@ -32,6 +33,7 @@ from app.services import pricing
 
 logger = get_logger(__name__)
 LLM_CALL = "llm_call"
+EMBEDDING = "embedding"
 _INT4_MAX = 2**31 - 1
 
 
@@ -63,6 +65,32 @@ def record_llm_call(bind: Engine | Connection, business_id: uuid.UUID, *, idempo
         log_event(logger, "usage.pricing_failed", 40, operation="usage", status="error", error=safe_error(exc))
         price = pricing.UNPRICED
     event.update(cost_micros=price.cost_micros, currency=price.currency, price_version=price.price_version)
+    return _write_ai_event(bind, business_id, event)
+
+
+def record_embedding(bind: Engine | Connection, business_id: uuid.UUID, *, idempotency_key: str, source_type: str,
+                     source_id: uuid.UUID | None, provider: str, model: str | None, configured_model: str | None,
+                     status: str, units: int, input_tokens: int | None = None, attempts: int = 1) -> bool:
+    """Record one request to a paid embeddings provider for `business_id` (the calling service's tenant, never from
+    input): `units` texts embedded in that one request, `attempts` HTTP attempts made for it (retries are attempts of
+    one event, never new events), success | error. True when written; False when this key is already recorded or the
+    write failed (logged)."""
+    event: dict[str, Any] = dict(
+        kind=EMBEDDING, idempotency_key=idempotency_key, source_type=source_type, source_id=source_id, status=status,
+        units=_count(units) or 0, input_tokens=_count(input_tokens), attempts=_count(attempts) or 0,
+        provider=_text(provider, 40), model=_text(model, 100), configured_model=_text(configured_model, 100))
+    try:
+        price = pricing.embedding_request_price(provider=event["provider"], model=event["model"],
+                                                configured_model=event["configured_model"],
+                                                input_tokens=event["input_tokens"], failed=status == "error")
+    except Exception as exc:  # an unusable price list: the event is still recorded, unpriced
+        log_event(logger, "usage.pricing_failed", 40, operation="usage", status="error", error=safe_error(exc))
+        price = pricing.UNPRICED
+    event.update(cost_micros=price.cost_micros, currency=price.currency, price_version=price.price_version)
+    return _write_ai_event(bind, business_id, event)
+
+
+def _write_ai_event(bind: Engine | Connection, business_id: uuid.UUID, event: dict[str, Any]) -> bool:
     try:
         # bind.engine: a new connection even when the caller's session is bound to a connection, never its transaction
         with Session(bind=bind.engine) as db:
@@ -72,8 +100,9 @@ def record_llm_call(bind: Engine | Connection, business_id: uuid.UUID, *, idempo
     except Exception as exc:  # metering must never break the reply; the log line keeps what was not stored
         # (token counts under other names: log keys containing "token" are redacted)
         log_event(logger, "usage.record_failed", 40, operation="usage", status="error", error=safe_error(exc),
-                  business_id=str(business_id), source_id=str(source_id) if source_id else None,
-                  event_status=event["status"], input_count=event["input_tokens"], output_count=event["output_tokens"],
+                  business_id=str(business_id), source_id=str(event["source_id"]) if event["source_id"] else None,
+                  event_status=event["status"], input_count=event["input_tokens"],
+                  output_count=event.get("output_tokens"),
                   **{k: v for k, v in event.items()
                      if k not in ("source_id", "status", "input_tokens", "output_tokens")})
         return False

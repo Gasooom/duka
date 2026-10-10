@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 712 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 747 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -108,6 +108,8 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_migration_0011.py` | Migration 0011 adds and removes only the counters; the usage ledger is untouched both ways |
 | `test_usage_metering.py` | Every real AI model call (reply turns and conversation summaries) is one `usage_events` row, committed on its own: it survives the rollback of its turn and the deletion of the conversation, and a retried turn is a new call; served and configured model, tokens, provider retries as attempts, errors; a repeated key or concurrent writers store one row; costs from `USAGE_PRICING_FILE` in exact decimals (served model first, exact before longest prefix, unlisted = unpriced, version kept), a broken price list stops the start; the rules engine, evaluation runs and `llm-check` record nothing; rows can only be inserted (UPDATE and DELETE are refused, and a shop with usage cannot be deleted) |
 | `test_whatsapp_metering.py` | WhatsApp traffic in the same ledger: one `wa_in` per stored inbound customer message (duplicates and rolled-back turns once; reactions and system notices not counted; real only with a verified webhook signature), one `wa_out`/`wa_alert` per send attempt under the claim's attempt number (retry = two rows, permanent failure = one failed row, concurrent workers = one, interrupted = `unknown` under the same key, nothing recorded when nothing was attempted), real vs simulated, template name only when known, market = calling code (never a number), late failures as a new `units` 0 row; WhatsApp price rules (no prices shipped; unpriced when not knowable), tenant isolation and the ledger's CHECKs and insert-only rule |
+| `test_embedding_metering.py` | Requests to a paid embeddings provider in the same ledger: one `embedding` row per request, never per text (a product, a CSV import's batch, a knowledge document's chunks, each search), for the tenant that made it; tokens and served model as reported, retries as attempts; a failed request is recorded while the import still fails and the search still ranks by words; nothing for the free hash embedder or a request never sent; rows survive a rollback and a ledger failure breaks nothing; embeddings prices (served model first, exact before prefix, unreported tokens unpriced, failed = 0, half-even rounding, invalid lists refused); evaluation runs record nothing; no WhatsApp fields, insert-only |
+| `test_migration_0012.py` | On scratch databases: 0012 keeps every row and admits embedding rows without WhatsApp fields; downgrade is refused while embedding usage exists and works (and can be redone) when there is none; the model's CHECK constraints on `usage_events` equal the migrated ones |
 | `test_migration_0010.py` | On scratch databases: 0010 keeps AI rows untouched, the ledger stays insert-only, downgrade is refused while WhatsApp usage exists and works (and can be redone) when there is none, models match the migrated schema (`alembic check`) |
 
 ---
@@ -225,7 +227,7 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 ```
 
 ## Verification status (honest)
-- ✅ 712 backend tests pass against PostgreSQL 16 + pgvector (CI runs
+- ✅ 747 backend tests pass against PostgreSQL 16 + pgvector (CI runs
   the suite on every push to `main`). Ruff is clean.
 - ✅ Migrations go up and down cleanly from an empty DB. `alembic check` reports the models are in sync.
 - ✅ The backend and the production Next.js build ran locally. Playwright drove the dashboard: login, the simulator
@@ -267,8 +269,8 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 - Per-tenant MoMo credentials (today they're platform-level env vars), more providers (Airtel Money, Flutterwave,
   Stripe), refunds.
 - Unpaid orders expiring and releasing stock, discounts/coupons, multi-language replies for the rules engine.
-- A platform super-admin console and billing. Per-tenant usage metering already exists: real AI calls and WhatsApp
-  traffic are recorded in `usage_events` (`docs/OPERATIONS.md` › Usage metering). Monthly usage reports, a tenant
-  cost model, quotas and spend alerts, a usage dashboard and billing are proposed Phase 4 slices awaiting product
-  approval (`docs/MILESTONES.md`).
+- A platform super-admin console and billing. Per-tenant usage metering already exists: real AI calls, paid
+  embeddings requests and WhatsApp traffic are recorded in `usage_events` (`docs/OPERATIONS.md` › Usage
+  metering). Monthly usage reports, a tenant cost model, quotas and spend alerts, a usage dashboard and billing are
+  proposed Phase 4 slices awaiting product approval (`docs/MILESTONES.md`).
 - Auth cookies (httpOnly) instead of localStorage for the dashboard token.
