@@ -17,7 +17,7 @@ from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.models import Business, InventoryMovement, Product, ProductCategory, User
 from app.repositories.repos import CategoryRepo, InventoryRepo, ProductRepo, SettingsRepo
 from app.services import audit_service
-from app.services.embeddings import get_embedder
+from app.services.embeddings import get_embedder, query_vector
 
 STOPWORDS = {
     "a", "an", "the", "i", "im", "i'm", "me", "my", "we", "you", "your", "do", "does", "have", "has", "any", "some",
@@ -296,7 +296,8 @@ class ProductService:
         )
         all_forms = sorted({f for fs in forms.values() for f in fs})
         tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{f}:*" for f in all_forms))
-        vscore = 1 - Product.embedding.cosine_distance(get_embedder().embed_one(query))
+        vec = query_vector(query)  # None: embeddings unavailable, rank by words alone
+        vscore = 1 - Product.embedding.cosine_distance(vec) if vec is not None else literal(0.0)
         score = (func.ts_rank(doc, tsq) * 2 + func.coalesce(vscore, 0)).label("score")
 
         def contains_term(col: Any) -> Any:  # "T-Shirt" -> "tshirt", so compounds and SKUs are candidates too

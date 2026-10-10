@@ -1,6 +1,7 @@
 # P1 — Runaway Conversation Guard: design
 
-Status: design reviewed 2026-10-10. B1 (deadlines) needs no product decision; B2–B6 wait for the decisions in §10.
+Status: design reviewed 2026-10-10. B1 (deadlines) needs no product decision and is implemented (§9); B2–B6 wait
+for the decisions in §10.
 Roadmap context: `docs/ROADMAP.md` Phase B. Code references are to commit `e1a18c2`.
 
 ## 1. Goal
@@ -164,6 +165,22 @@ or phone numbers.
 
 B1 deadlines + facts kept (no schema) → B2 table + observe mode → B3 enforce per message → B4 per customer → B5 per
 tenant → B6 fairness (optional). One reviewed, CI-green commit per step.
+
+**B1 — implemented** (`tests/test_turn_deadline.py`):
+- The turn deadline lives in a context variable (`app/core/deadline.py`) set by `AgentEngine.run`, so work a tool
+  starts sees it too. The deadline is checked before every tool call, not only before model calls; skipped calls are
+  recorded as a `deadline` step. The summary call takes at most `min(10 s, time left)` and is skipped (deterministic
+  summary) with under 2 s left.
+- When the time runs out, the customer gets the facts the tools already returned (as at the iteration limit), else
+  the fallback; the run is `error` ("Turn time budget … exhausted") and `agent.turn_budget_exhausted` is logged. The
+  two-strike handoff is unchanged.
+- Embeddings: each request's timeout is `min(20 s, time left in the turn)`; retries back off 0.5 s then 1 s and stop
+  when the turn could not fit another request.
+- Found while challenging B1: an embeddings failure inside a search reached the customer as the raw English text
+  "Embedding request failed: …". Searches now fall back to ranking by words alone (`query_vector`, log
+  `embeddings.unavailable`); admission is unchanged (CLAUDE.md rule 11), so the same products are found.
+- Not covered: other external calls inside tools (MoMo `request_payment`, not enabled) are bounded only by their own
+  timeouts.
 
 ## 10. Decisions needed (product owner)
 

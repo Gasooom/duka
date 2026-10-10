@@ -67,7 +67,7 @@ cd ../frontend && npm install && BACKEND_URL=http://localhost:8000 npm run dev
 ```bash
 cd backend && createdb commerce_test && pytest -q        # or: make test-docker
 ```
-There are 640 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
+There are 651 tests (including parametrized cases). They run against real Postgres + pgvector: the schema is dropped and rebuilt with `alembic upgrade head`
 on every run, which also proves the migrations work on a clean database. External HTTP (Meta, MoMo, the LLM) goes through
 `httpx.MockTransport`, so the request shape, headers and retries of the real clients are tested.
 
@@ -102,6 +102,7 @@ on every run, which also proves the migrations work on a clean database. Externa
 | `test_whatsapp_window.py` | The 24-hour window counts only the customer's own messages; a customer silent for 25 h is not messaged (never reaches the adapter), the message is marked `outside_24h_window`, the conversation flagged and the owner alerted once per silence; the 23.5 h margin; late Meta failures (131047 and others) recorded and alerted once; failed owner alerts visible; another shop cannot touch these rows |
 | `test_order_reminders.py` | One owner reminder per order for pending review and for accepted-but-unpaid, never repeated; paid, cancelled and delivered orders get none; no stock, status or customer change; each shop hears only about its own orders; the worker runs the sweep |
 | `test_rate_limit_visibility.py` | The per-customer limit (30 a minute) is unchanged and still unanswered beyond it, but no longer silent: the message is kept and marked, the conversation flagged and the owner alerted once per conversation per day; each shop has its own limit and alerts; normal conversations untouched; a redelivered webhook counts once |
+| `test_turn_deadline.py` | The AI turn budget covers tools too: a slow tool stretches a turn by at most itself and the skipped calls are recorded; when time runs out the customer gets the facts the tools returned (or the fallback); model, summary and embedding requests get only the time left; embeddings back off between retries; when embeddings are unavailable searches find the same products by words and the customer never sees a technical error |
 | `test_usage_metering.py` | Every real AI model call (reply turns and conversation summaries) is one `usage_events` row, committed on its own: it survives the rollback of its turn and the deletion of the conversation, and a retried turn is a new call; served and configured model, tokens, provider retries as attempts, errors; a repeated key or concurrent writers store one row; costs from `USAGE_PRICING_FILE` in exact decimals (served model first, exact before longest prefix, unlisted = unpriced, version kept), a broken price list stops the start; the rules engine, evaluation runs and `llm-check` record nothing; rows can only be inserted (UPDATE and DELETE are refused, and a shop with usage cannot be deleted) |
 | `test_whatsapp_metering.py` | WhatsApp traffic in the same ledger: one `wa_in` per stored inbound customer message (duplicates and rolled-back turns once; reactions and system notices not counted; real only with a verified webhook signature), one `wa_out`/`wa_alert` per send attempt under the claim's attempt number (retry = two rows, permanent failure = one failed row, concurrent workers = one, interrupted = `unknown` under the same key, nothing recorded when nothing was attempted), real vs simulated, template name only when known, market = calling code (never a number), late failures as a new `units` 0 row; WhatsApp price rules (no prices shipped; unpriced when not knowable), tenant isolation and the ledger's CHECKs and insert-only rule |
 | `test_migration_0010.py` | On scratch databases: 0010 keeps AI rows untouched, the ledger stays insert-only, downgrade is refused while WhatsApp usage exists and works (and can be redone) when there is none, models match the migrated schema (`alembic check`) |
@@ -221,7 +222,7 @@ GET /healthz | /readyz | /metrics (ops token) | /health
 ```
 
 ## Verification status (honest)
-- ✅ 640 backend tests pass against PostgreSQL 16 + pgvector (local run of the tree committed as `415b9b0`; CI runs
+- ✅ 651 backend tests pass against PostgreSQL 16 + pgvector (CI runs
   the suite on every push to `main`). Ruff is clean.
 - ✅ Migrations go up and down cleanly from an empty DB. `alembic check` reports the models are in sync.
 - ✅ The backend and the production Next.js build ran locally. Playwright drove the dashboard: login, the simulator

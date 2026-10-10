@@ -8,14 +8,18 @@
 import hashlib
 import math
 import re
+import time
 from abc import ABC, abstractmethod
 from functools import lru_cache
 
 import httpx
 
 from app.core.config import settings
+from app.core.deadline import remaining as turn_time_left
 from app.core.errors import ExternalServiceError
+from app.core.logging import get_logger, log_event
 
+logger = get_logger(__name__)
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
@@ -65,6 +69,9 @@ class HashingEmbedder(Embedder):
 
 class OpenAICompatEmbedder(Embedder):
     name = "openai_compat"
+    MAX_ATTEMPTS = 3
+    TIMEOUT_SECONDS = 20.0  # per request; inside an AI turn also capped by the time left in it
+    MIN_ATTEMPT_SECONDS = 1.0
 
     def __init__(self, base_url: str, api_key: str, model: str, dim: int):
         if not api_key:
@@ -76,24 +83,47 @@ class OpenAICompatEmbedder(Embedder):
         self.dim = dim
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        """Up to MAX_ATTEMPTS requests, retrying 429/5xx/network errors with exponential backoff. Inside an AI turn
+        (a search tool) every request and pause fits in what is left of the turn budget; when too little is left
+        the search fails like an outage instead of stretching the turn."""
         last_exc: Exception | None = None
-        for _ in range(3):
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            left = turn_time_left()
+            if left is not None and left < self.MIN_ATTEMPT_SECONDS:
+                last_exc = last_exc or "no time left in the turn budget"
+                break
             try:
                 r = httpx.post(
                     f"{self.base_url}/embeddings",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json={"model": self.model, "input": texts, "dimensions": self.dim},
-                    timeout=20,
+                    timeout=self.TIMEOUT_SECONDS if left is None else min(self.TIMEOUT_SECONDS, left),
                 )
-                if r.status_code in (429, 500, 502, 503, 504):
-                    last_exc = ExternalServiceError(f"embeddings HTTP {r.status_code}")
-                    continue
-                r.raise_for_status()
-                data = sorted(r.json()["data"], key=lambda d: d["index"])
-                return [d["embedding"] for d in data]
+                if r.status_code not in (429, 500, 502, 503, 504):
+                    r.raise_for_status()
+                    data = sorted(r.json()["data"], key=lambda d: d["index"])
+                    return [d["embedding"] for d in data]
+                last_exc = ExternalServiceError(f"embeddings HTTP {r.status_code}")
             except httpx.TransportError as exc:
                 last_exc = exc
+            if attempt < self.MAX_ATTEMPTS:
+                pause = 0.5 * 2 ** (attempt - 1)
+                left = turn_time_left()
+                if left is not None and left - pause < self.MIN_ATTEMPT_SECONDS:
+                    break
+                time.sleep(pause)
         raise ExternalServiceError(f"Embedding request failed: {last_exc}")
+
+
+def query_vector(query: str) -> list[float] | None:
+    """The embedding of a search query, or None when the embeddings service is unavailable (outage, or no time left
+    in the AI turn). Searches then rank by words alone: vector similarity only ranks, never admits (CLAUDE.md rule
+    11), so the results stay correct and the customer never sees a technical error."""
+    try:
+        return get_embedder().embed_one(query)
+    except (ExternalServiceError, httpx.HTTPError) as exc:  # retries exhausted, no time left, or a 4xx (bad key)
+        log_event(logger, "embeddings.unavailable", 30, operation="embeddings", status="degraded", error=str(exc)[:300])
+        return None
 
 
 @lru_cache

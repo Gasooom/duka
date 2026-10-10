@@ -25,6 +25,8 @@ from app.agents.language import NAMES
 from app.agents.providers import LLMError, LLMProvider, LLMResponse, get_llm_provider
 from app.agents.render import render_tool_result
 from app.core.config import settings
+from app.core.deadline import remaining as turn_time_left
+from app.core.deadline import turn_deadline
 from app.core.errors import DomainError
 from app.core.logging import get_logger, log_event, safe_error
 from app.i18n import error_text, t
@@ -203,13 +205,14 @@ class AgentEngine:
             return
         transcript = "\n".join(f"{m.role}: {m.content[:300]}" for m in older[-40:])
         summary = None
-        if self.provider.is_llm:
+        left = turn_time_left()  # the summary never takes the whole turn: at most 10 s, never past the deadline
+        if self.provider.is_llm and (left is None or left >= 2):
             try:
                 resp = self._complete(("conversation", conv.id), [
                     {"role": "system", "content": "Summarize this shopping conversation in <=80 words: customer "
                                                   "preferences, products discussed, decisions. No prices."},
                     {"role": "user", "content": (conv.summary or "") + "\n" + transcript}], [], temperature=0,
-                    timeout=10)
+                    timeout=10 if left is None else min(10, left))
                 summary = resp.content
             except LLMError:
                 summary = None
@@ -248,6 +251,12 @@ class AgentEngine:
         return t("fallback", self.language)
 
     def run(self, customer: Customer, conv: Conversation, trigger: Message) -> AgentOutcome:
+        # One deadline for the whole turn, also seen by work started inside tools (embeddings: app/core/deadline.py).
+        deadline = time.monotonic() + settings.agent_turn_timeout_seconds
+        with turn_deadline(deadline):
+            return self._run(customer, conv, trigger, deadline)
+
+    def _run(self, customer: Customer, conv: Conversation, trigger: Message, deadline: float) -> AgentOutcome:
         start = time.perf_counter()
         self.language = conversation_language(conv, self.business)
         run = AgentRunRepo(self.db, self.business.id).add(
@@ -262,7 +271,6 @@ class AgentEngine:
         outcome = AgentOutcome(text="", run=run)
         checkout_summary: tuple[str, str] | None = None  # (summary text, cart id) from prepare_checkout
         turn_results: list[tuple[str, dict, dict]] = []
-        deadline = time.monotonic() + settings.agent_turn_timeout_seconds
         unsure = False
 
         # Deterministic steps first: order confirmation and "talk to a person" never depend on the LLM.
@@ -284,10 +292,12 @@ class AgentEngine:
                 ctx = ToolContext(db=self.db, business=self.business, customer=customer, conversation=conv,
                                   language=self.language)
                 tool_calls_made = 0
+                out_of_time = False
                 for _ in range(settings.agent_max_tool_iterations):
                     remaining = deadline - time.monotonic()
                     if remaining < 1:
-                        raise LLMError(f"Turn time budget ({settings.agent_turn_timeout_seconds}s) exhausted")
+                        out_of_time = True
+                        break
                     t0 = time.perf_counter()
                     resp = self._complete(("agent_run", run.id), messages, tool_schemas, model=self.model,
                                           temperature=float(self.cfg.temperature), timeout=remaining)
@@ -305,7 +315,11 @@ class AgentEngine:
                                      "tool_calls": [{"id": c.id, "type": "function",
                                                      "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
                                                     for c in resp.tool_calls]})
-                    for call in resp.tool_calls:
+                    for i, call in enumerate(resp.tool_calls):
+                        if time.monotonic() >= deadline:  # a slow tool must not stretch the turn further
+                            out_of_time = True
+                            steps.append({"type": "deadline", "skipped_tool_calls": len(resp.tool_calls) - i})
+                            break
                         tool_calls_made += 1
                         if tool_calls_made > settings.agent_max_tool_calls:
                             result, latency = {"ok": False, "error": "Too many tool calls in one turn"}, 0.0
@@ -327,11 +341,18 @@ class AgentEngine:
                                                metadata={"tool": call.name, "ok": result.get("ok")}, agent_run_id=run.id)
                         messages.append({"role": "tool", "tool_call_id": call.id,
                                          "content": result_json[:MAX_TOOL_RESULT_CHARS]})
+                    if out_of_time:
+                        break
                 run.status = "success" if text else "error"
                 if not text:
-                    run.error = "No final response within the tool-iteration limit"
+                    if out_of_time:
+                        run.error = f"Turn time budget ({settings.agent_turn_timeout_seconds}s) exhausted"
+                        log_event(logger, "agent.turn_budget_exhausted", 30, operation="agent.run", status="error",
+                                  llm_calls=run.llm_calls, tool_calls=tool_calls_made)
+                    else:
+                        run.error = "No final response within the tool-iteration limit"
                     # The tools did answer: send their facts instead of an apology (live: five check_inventory
-                    # calls for "size 42" ended in "sorry, I'm having trouble").
+                    # calls for "size 42" ended in "sorry, I'm having trouble"). The same when the time runs out.
                     text = self._render_facts(turn_results, self.language)
             except Exception as exc:  # LLM outage, bad response... never crash the webhook
                 run.status = "error"

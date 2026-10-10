@@ -9,13 +9,13 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, or_, text
+from sqlalchemy import func, literal, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.errors import ValidationError
 from app.models import KnowledgeChunk, KnowledgeDocument
 from app.repositories.repos import KnowledgeChunkRepo, KnowledgeDocumentRepo
-from app.services.embeddings import get_embedder
+from app.services.embeddings import get_embedder, query_vector
 from app.services.product_service import field_tokens, query_terms, term_matches
 
 MAX_DOC_CHARS = 200_000
@@ -101,7 +101,8 @@ class KnowledgeService:
         terms = query_terms(query)
         if not terms:
             return []
-        vscore = 1 - KnowledgeChunk.embedding.cosine_distance(get_embedder().embed_one(query))
+        vec = query_vector(query)  # None: embeddings unavailable, rank by words alone
+        vscore = 1 - KnowledgeChunk.embedding.cosine_distance(vec) if vec is not None else literal(0.0)
         doc_tsv = func.to_tsvector(text("'simple'::regconfig"), KnowledgeChunk.content)
         tsq = func.to_tsquery(text("'simple'::regconfig"), " | ".join(f"{t}:*" for t in terms))
         score = (func.coalesce(vscore, 0) + func.ts_rank(doc_tsv, tsq)).label("score")

@@ -14,6 +14,7 @@ from app.agents.grounding import build_ledger, verify
 from app.agents.providers import LLMError, LLMResponse, ToolCall, set_provider_override
 from app.agents.providers.openai_compat import OpenAICompatProvider
 from app.core.config import settings
+from app.i18n import t as i18n_text
 from app.models import AgentRun, Order, Product
 from tests.conftest import place_order
 from tests.test_agent import Scripted
@@ -275,7 +276,9 @@ def test_slow_model_is_cut_off_by_the_turn_budget(fashion, outbox, db, monkeypat
     fashion.send("cart?")
     assert time.monotonic() - start < 3
     run = last_run(db)
-    assert run.status == "error" and "budget" in run.error and reply(outbox).startswith("Sorry")
+    # The cart tool did answer before the time ran out: the customer gets that fact, not an apology
+    # (tests/test_turn_deadline.py covers a turn that ran out of time with nothing to say).
+    assert run.status == "error" and "budget" in run.error and reply(outbox) == i18n_text("cart_empty", "en")
 
 
 def test_too_many_tool_calls_are_capped(fashion, outbox, db, monkeypatch):
