@@ -1,7 +1,8 @@
 # P3 — Monthly usage reporting: design
 
 Roadmap: `docs/ROADMAP.md` Phase C2 (Phase 4 P3). Status: decisions approved by the product owner on 2026-10-10
-(§6); implemented and tested locally (§7). It builds only on the usage ledger (P0, P2) and needs no prices.
+(§6); implemented, tested and CI-verified (`db0bc29`, GitHub Actions run 38075375616; §7). It builds only on the usage
+ledger (P0, P2) and needs no prices.
 
 ## 1. Goal
 

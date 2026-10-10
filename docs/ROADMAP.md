@@ -84,13 +84,14 @@ C1 embedding metering · C2 monthly usage aggregation (real vs simulated, unknow
 C3 tenant cost model (known prices + documented infrastructure allocation; estimates labelled) · C4 quotas and spend
 alerts · C5 merchant usage UI (tenant-isolated) · C6 billing, deferred until C2–C4 are validated.
 Needs: provider price lists or invoices (C3), a pricing/revenue decision (C3, C6). Status: C1 CI-verified
-(`0f82acb`); C2 decisions C2-D1–D3 approved 2026-10-10 and implemented (`docs/P3_MONTHLY_USAGE.md`).
+(`0f82acb`); C2 CI-verified (`db0bc29`; decisions C2-D1–D3 approved 2026-10-10, `docs/P3_MONTHLY_USAGE.md`).
 
 ### Phase D — Merchant operations and inventory reliability
 Audit first, then close material gaps only: inventory consistency and discrepancy handling, unpaid-order expiry and
 stock release, cancellations and failure recovery, onboarding, staff roles, recovery from failed jobs without a
 developer. AC per gap: a merchant-facing workflow with tests for normal, invalid, retried and concurrent cases.
-Needs: product decisions on expiry rules and staff roles.
+Needs: product decisions on expiry rules and staff roles. Status: the read-only audit is done
+(`docs/D_MERCHANT_OPERATIONS_AUDIT.md`, 2026-10-10): fixes D1–D4 and D12–D14 need no product decision; D5–D11 do.
 
 ### Phase E — AI and multilingual validation
 E1 stable eval datasets with thresholds approved before the final run · E2 real-provider tool calling and grounding
@@ -129,7 +130,9 @@ unvalidated), load/concurrency/recovery/backup/security evidence, remaining risk
 | Production LLM not validated; no approved accuracy thresholds; no native review | High (for go-live) | M3, M10, Q2 | E, G |
 | No prices loaded; economics unknown | High (for viability) | OPERATIONS › Usage metering | C1–C3 |
 | Noisy neighbour: one tenant can occupy the shared workers | Medium | F6 (`inbound.py` claim order) | B6 / F |
-| Unpaid orders hold stock indefinitely | Medium | README › Future work | D |
+| Two concurrent owner actions on one order both apply: two cancellations restock twice, two manual payments are both recorded | High | Phase D audit D1, D2: both reproduced on a throwaway database | D: lock the order row (no product decision) |
+| A dead-lettered customer message vanishes from the shop's view (no inbox entry, no alert) | Medium | Phase D audit D5 | D: store and flag it, or list unprocessed messages with a retry (decision) |
+| Unpaid orders hold stock indefinitely | Medium | README › Future work; Phase D audit D6 | D |
 | A CSV import re-embeds every updated product with its own request, changed or not (cost with a paid embedder) | Low | P2 finding 1 (`docs/P2_EMBEDDING_METERING.md` §6); visible in the ledger as `product` rows | C or D: first another way to re-embed a catalog after switching embedders (re-importing is the documented one), then re-embed only changed text and batch an import's updates |
 | Multi-instance behaviour unvalidated | Medium | README › Future work | F |
 | Time zone data comes from the OS image (`tzdata` is not a Python requirement) | Low | C2 finding 1: the current backend image carries Debian's tzdata 2026c; without it business hours and shop-time-zone reports lose their zone | F: pin `tzdata`, or check a zone in the image build |

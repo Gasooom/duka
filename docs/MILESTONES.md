@@ -1,9 +1,9 @@
 # Duka — Milestone Status
 
-Last updated: 2026-10-10 (adds Phase 4 P1, the Runaway Conversation Guard, code complete, and Phase 4 P2, embedding
-usage metering; earlier the same day: production hardening phases 1–3, Render preparation and Phase 4 P0 usage
-metering; M3's key status reconciled with `docs/VALIDATION_REPORT.md`; the remaining Phase 4 slices are recorded as a
-proposal).
+Last updated: 2026-10-10 (adds Phase 4 P1, the Runaway Conversation Guard, code complete; Phase 4 P2, embedding usage
+metering; Phase 4 P3, monthly usage reports; and the Phase D audit. Earlier the same day: production hardening phases
+1–3, Render preparation and Phase 4 P0 usage metering; M3's key status reconciled with `docs/VALIDATION_REPORT.md`;
+the remaining Phase 4 slices are recorded as a proposal).
 Previous update: 2026-10-04 (M2, M4–M8, M10 complete; M3 and M9 ready but blocked on external accounts).
 
 Status is based on code, tests and a running stack — not on README claims.
@@ -577,6 +577,33 @@ Not validated: no real embeddings provider has been called (mocked endpoint); mi
 applied to the development database (still at `0010`); nothing has been deployed. Finding: a CSV import re-embeds
 every product it updates with its own request (`docs/ROADMAP.md` §6).
 
+### Phase 4 P3 — Monthly usage reports (C2) · COMPLETE (code, CI) · no real traffic or prices yet
+
+`db0bc29` (`feat(usage): monthly usage reports from the ledger (C2: operator command, tenant API)`); CI run
+`38075375616` (#17, 5 jobs green). Design and the product owner's decisions C2-D1–D3: `docs/P3_MONTHLY_USAGE.md`.
+- Read-only reports from `usage_events` alone: one shop in the calendar month of its own time zone
+  (`GET /api/usage/monthly`, the shop from the token only; `python -m app.cli usage-report --business <id>`), and
+  every shop in UTC months (`python -m app.cli usage-report`). One REPEATABLE READ, READ ONLY snapshot per report; no
+  provider call, nothing sent.
+- Costs per currency over priced events only; `pricing` priced / partially_priced / unpriced / no_usage, unpriced
+  events counted by kind and never treated as 0. WhatsApp send attempts and messages (counted once) apart; real,
+  simulated and unknown traffic apart.
+- `/api/dashboard/usage` unchanged; documented as an activity metric (C2-D3).
+- Tests: `test_usage_report.py` (17, including every figure against a row-by-row count of random ledger rows for two
+  shops, and month, year and daylight-saving boundaries), the tenant-isolation snapshot; 764 backend tests pass
+  locally. Three deliberate defects were each caught by the tests.
+
+Not validated: no real traffic and no real price list (a real report today would show its usage as unpriced);
+nothing has been deployed. Finding: time zone data comes from the OS image (`docs/ROADMAP.md` §6).
+
+### Phase D — Merchant operations and inventory audit · DONE (read-only) · nothing fixed yet
+
+`docs/D_MERCHANT_OPERATIONS_AUDIT.md` (2026-10-10, code at `0f82acb`): 14 findings with evidence. Two were
+reproduced on a throwaway database: two concurrent cancellations of one order restock twice (stock 6 instead of 5),
+and two concurrent cash payments are both recorded. Fixes that need no product decision: D1–D4, D12–D14; decisions
+requested: D5 (dead-lettered messages), D6 (unpaid-order expiry), D7 (failed delivery, returns), D8 (order edits),
+D9 (customer cancellation), D10 (staff), D11 (low-stock alerts).
+
 ### Phase 4 — remaining slices · Proposed — awaiting product approval
 
 Recorded on 2026-10-10 as a proposed product plan. It is not a record of work done, none of these slices exists in
@@ -591,7 +618,7 @@ still needs its open product decisions approved before it is implemented.
 | P0 | Completed: AI and WhatsApp usage metering (section above). |
 | P1 — Runaway conversation guard | Code complete (section above). Proposed as: tenant-scoped limits that stop runaway agent loops and bound AI spend. Define safe defaults, explicit failure behaviour and tests before implementation. |
 | P2 — Embedding usage metering | Code complete (section above). Proposed as: measure embedding usage per tenant and avoid double-counting. |
-| P3 — Monthly usage reporting | Design proposed in `docs/P3_MONTHLY_USAGE.md`, decisions pending. Aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
+| P3 — Monthly usage reporting | Code complete (section above). Proposed as: aggregate actual usage by tenant, month, provider/event type, and real versus simulated traffic. Unknown and unpriced events stay explicitly distinguishable. |
 | P4 — Tenant cost model | Known provider costs and a clearly documented infrastructure allocation per tenant. Never invent missing prices or present estimates as exact costs. |
 | P5 — Quotas and spend alerts | Tenant-level thresholds and actionable alerts, built on validated usage and cost data. |
 | P6 — Dashboard usage UI | Monthly usage, known costs, unpriced usage, quotas and alerts, with strict tenant isolation. |
