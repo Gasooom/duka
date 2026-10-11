@@ -1,7 +1,11 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Optional root CA for a build machine whose network inspects TLS (README › "Building behind TLS inspection"): the
+# BuildKit secret `extra_ca` is added to Node's trusted roots for this step only; verification stays on.
+RUN --mount=type=secret,id=extra_ca \
+    if [ -s /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
+    npm ci --no-audit --no-fund
 
 FROM node:22-alpine AS build
 WORKDIR /app

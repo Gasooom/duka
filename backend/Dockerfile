@@ -4,8 +4,19 @@ WORKDIR /app
 # Development images also get pytest/ruff (docker-compose.yml sets INSTALL_DEV=true); production images don't.
 ARG INSTALL_DEV=false
 COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$INSTALL_DEV" = "true" ]; then pip install --no-cache-dir -r requirements-dev.txt; fi
+# Packages come over verified HTTPS. On a build machine whose network inspects TLS (an antivirus web shield, a
+# corporate proxy), pass the root CA that machine already trusts as the BuildKit secret `extra_ca` (README ›
+# "Building behind TLS inspection"): it is added to pip's bundle for this step only, never written to a layer, and
+# verification stays on. Without the secret the build is unchanged.
+RUN --mount=type=secret,id=extra_ca \
+    set -e; cert=""; \
+    if [ -s /run/secrets/extra_ca ]; then \
+        cat "$(python -c 'import pip._vendor.certifi as c; print(c.where())')" /run/secrets/extra_ca > /tmp/ca.pem; \
+        cert="--cert /tmp/ca.pem"; \
+    fi; \
+    pip install --no-cache-dir $cert -r requirements.txt; \
+    if [ "$INSTALL_DEV" = "true" ]; then pip install --no-cache-dir $cert -r requirements-dev.txt; fi; \
+    rm -f /tmp/ca.pem
 COPY . .
 # Tests, evals and the demo seed (demo accounts with a known password) are for development and CI images only.
 RUN if [ "$INSTALL_DEV" != "true" ]; then rm -rf tests evals seed; fi \

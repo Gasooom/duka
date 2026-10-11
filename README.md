@@ -54,6 +54,25 @@ make seed                       # Demo Store, Kigali Fashion, Mama's Electronics
   simulator, and *Confirm payment received*. Click **Debug** in the conversation to see every step.
 - Or from a terminal: `make demo`
 
+### Building behind TLS inspection
+
+If `pip install` or `npm ci` fails during the image build with `certificate verify failed: unable to get local
+issuer certificate` (`UNABLE_TO_VERIFY_LEAF_SIGNATURE` for npm), something on your machine re-signs HTTPS traffic
+(an antivirus web shield, a corporate proxy) with a root CA the base images do not know. Either exclude the package
+registries (`pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`) or Docker from that HTTPS scanning, or pass the
+root CA your machine already trusts to the build as a BuildKit secret. It is used only while packages are installed,
+is never written to an image layer, and certificate verification stays on:
+
+```bash
+# export the inspecting root (public certificate only) from your OS trust store to a file outside the repository,
+# e.g. Windows: certmgr.msc › Trusted Root Certification Authorities › the root › Export (Base-64 .cer)
+docker build --secret id=extra_ca,src=<root.pem> --build-arg INSTALL_DEV=true -t duka-backend backend
+docker build --secret id=extra_ca,src=<root.pem> -t duka-frontend frontend
+docker compose up -d --no-build
+```
+
+Never disable verification (`--trusted-host`, `NODE_TLS_REJECT_UNAUTHORIZED=0`) instead.
+
 ## Local without Docker
 Requires PostgreSQL 16 with the `vector` extension available (`apt install postgresql-16-pgvector`).
 ```bash
