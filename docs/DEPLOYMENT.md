@@ -80,12 +80,15 @@ and watch it appear in the inbox.
 
 - Uptime monitor: `GET https://<domain>/readyz` every minute; alert on non-200 (503 = customers affected).
   Optionally poll `/readyz?details=1` with `Authorization: Bearer $OPS_TOKEN` and alert on `degraded`.
-- Backups (host crontab, `crontab -e`):
+- Backups (host crontab, `crontab -e`, as the user that runs Docker). `COMPOSE` points the scripts at the production
+  stack. Each line reads the database settings from the `chmod 600` env file when it runs (`export` is a shell
+  builtin), so no password is written into the crontab or shown on a command line. `verify_restore.sh` needs
+  `POSTGRES_PASSWORD` to open the restored copy; `backup.sh` does not. Details: `docs/OPERATIONS.md` › Backups.
 
 ```
-15 2 * * *  cd /opt/duka && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" POSTGRES_USER=duka POSTGRES_DB=duka scripts/backup.sh >> /var/log/duka-backup.log 2>&1
-45 2 * * 0  cd /opt/duka && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" POSTGRES_USER=duka POSTGRES_DB=duka POSTGRES_PASSWORD=<db password> scripts/verify_restore.sh >> /var/log/duka-backup.log 2>&1
+15 2 * * *  cd /opt/duka && export $(grep -E '^POSTGRES_(USER|DB)=' deploy/.env.production) && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" scripts/backup.sh >> /var/log/duka-backup.log 2>&1
 30 2 * * *  rclone copy /opt/duka/backups remote:duka-backups >> /var/log/duka-backup.log 2>&1
+45 2 * * 0  cd /opt/duka && export $(grep -E '^POSTGRES_(USER|DB|PASSWORD)=' deploy/.env.production) && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" scripts/verify_restore.sh >> /var/log/duka-backup.log 2>&1
 ```
 
 See `docs/OPERATIONS.md` for logs, metrics, restore and incident handling.
@@ -102,7 +105,7 @@ DUKA_ENV_FILE=.env.staging deploy/deploy.sh && DUKA_ENV_FILE=.env.staging deploy
 ## 8. Upgrades and rollback
 
 ```bash
-scripts/backup.sh                      # (with COMPOSE=... as above) before any upgrade
+scripts/backup.sh                      # before any upgrade (COMPOSE, POSTGRES_*: docs/OPERATIONS.md › Backups)
 git fetch && git checkout <release>    # e.g. a tag
 deploy/deploy.sh && deploy/verify_deployment.sh
 ```

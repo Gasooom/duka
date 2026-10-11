@@ -230,17 +230,47 @@ Metrics: `duka_ai_guard_reserved_current_hour{unit}`, `duka_ai_guard_busiest_ten
 
 ## Backups
 
+**Render** (the pilot's host): the database plan's managed backups replace these scripts (`docs/DEPLOYMENT.md` › R ›
+Backups). Record the plan's retention and point-in-time recovery, and restore into a separate Render database once
+before the pilot. The scripts below are for the Docker Compose stacks.
+
+**Development stack** (repository root, `docker compose`): the defaults apply.
+
 ```bash
 scripts/backup.sh                       # pg_dump (custom format) + .manifest (row counts) + .sha256, 14-day retention
-VERIFY_EMAIL=owner@shop.rw VERIFY_PASSWORD=... scripts/verify_restore.sh   # prove the newest backup restores
+VERIFY_EMAIL=owner@shop.rw scripts/verify_restore.sh   # prove the newest backup restores; that user's account is intact
 ```
 
-Schedule on the server (crontab):
+`VERIFY_PASSWORD` additionally checks that user's password; set it only in an interactive session, never in a
+crontab or a saved script.
+
+**Self-hosted production** (`/opt/duka`, `deploy/docker-compose.prod.yml`): point the scripts at the production stack.
+`COMPOSE` selects it (the default, `docker compose`, is the development compose file), and the database settings come
+from `deploy/.env.production` (otherwise the scripts read the repository's `.env`, which a production server does not
+have, and fall back to the development defaults). Each cron line reads them from the `chmod 600` env file when it
+runs. `export` is a shell builtin, so the values never appear in the crontab or on a process's command line.
+`backup.sh` needs `POSTGRES_USER` and `POSTGRES_DB`; `verify_restore.sh` also needs `POSTGRES_PASSWORD` to open the
+restored copy with the app. The same lines are in `docs/DEPLOYMENT.md` §6.
 
 ```
-15 2 * * *  cd /opt/duka && scripts/backup.sh >> /var/log/duka-backup.log 2>&1
-45 2 * * 0  cd /opt/duka && scripts/verify_restore.sh >> /var/log/duka-backup.log 2>&1
+# crontab -e, as the user that runs Docker (cron uses /bin/sh)
+15 2 * * *  cd /opt/duka && export $(grep -E '^POSTGRES_(USER|DB)=' deploy/.env.production) && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" scripts/backup.sh >> /var/log/duka-backup.log 2>&1
+30 2 * * *  rclone copy /opt/duka/backups remote:duka-backups >> /var/log/duka-backup.log 2>&1
+45 2 * * 0  cd /opt/duka && export $(grep -E '^POSTGRES_(USER|DB|PASSWORD)=' deploy/.env.production) && COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml" scripts/verify_restore.sh >> /var/log/duka-backup.log 2>&1
 ```
+
+The values must be the generated ones, without spaces, as the commands in `deploy/.env.production.example` produce.
+For a manual run on the server, set the same two things in the shell first:
+
+```bash
+cd /opt/duka
+export $(grep -E '^POSTGRES_(USER|DB|PASSWORD)=' deploy/.env.production)
+export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml"
+scripts/backup.sh
+```
+
+After the first night, check `/var/log/duka-backup.log`: `backups/` holds a `.dump`, `.manifest` and `.sha256`, and
+the Sunday run of `verify_restore.sh` passes. Run it once by hand rather than waiting for Sunday.
 
 **Off-site copy (required for production):** a backup on the same server does not survive losing that server.
 Copy `backups/` to storage outside the VPS after each run (e.g. `rclone copy backups/ remote:duka-backups` to
@@ -257,6 +287,10 @@ scripts/restore.sh backups/duka-<ts>.dump --replace-live  # disaster recovery
 `--replace-live` asks for confirmation, stops backend + frontend, **renames** (does not drop) the current database
 to `<name>_before_restore_<ts>`, restores, and starts the services. Messages that arrived after the backup and
 before the restore are in the renamed database. Run `scripts/verify_restore.sh` on a backup first.
+
+On a self-hosted production server, run these with `COMPOSE` and the `POSTGRES_*` variables set as under Backups:
+`restore.sh` stops and starts the services through `COMPOSE`. On Render, restore from the dashboard's managed
+backups instead.
 
 ## Common incidents
 
