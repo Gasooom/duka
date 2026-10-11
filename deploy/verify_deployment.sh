@@ -17,6 +17,9 @@ BASE="https://$DOMAIN"
 pass=0; fail=0
 check() { if eval "$2" >/dev/null 2>&1; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }
 code() { curl -s $K -o /dev/null -w '%{http_code}' "$@"; }
+# Secrets never go on a command line, where any local user can read them in the process list: commands read them from
+# stdin (printf is a shell builtin).
+ops_curl() { printf 'Authorization: Bearer %s\n' "$OPS" | curl -s $K -H @- "$@"; }
 
 check "HTTP redirects to HTTPS"                 '[ "$(curl -s -o /dev/null -w "%{http_code}" http://$DOMAIN/login)" = 308 ]'
 check "liveness over HTTPS"                     '[ "$(code $BASE/healthz)" = 200 ]'
@@ -27,14 +30,19 @@ check "nosniff + frame deny headers"            'curl -sI $K $BASE/login | grep 
 check "no Server header"                        '! curl -sI $K $BASE/login | grep -qi "^server:"'
 check "API docs disabled"                       '[ "$(code $BASE/api/../docs)" != 200 ] && [ "$(code $BASE/openapi.json)" != 200 ]'
 check "metrics hidden without token"            '[ "$(code $BASE/metrics)" = 404 ]'
-check "metrics with ops token"                  'curl -fs $K -H "Authorization: Bearer $OPS" $BASE/metrics | grep -q "^duka_up 1"'
-check "readiness details only with token"       '! curl -s $K "$BASE/readyz?details=1" | grep -q checks && curl -s $K -H "Authorization: Bearer $OPS" "$BASE/readyz?details=1" | grep -q checks'
+check "metrics with ops token"                  'ops_curl -f $BASE/metrics | grep -q "^duka_up 1"'
+check "readiness details only with token"       '! curl -s $K "$BASE/readyz?details=1" | grep -q checks && ops_curl "$BASE/readyz?details=1" | grep -q checks'
 check "public registration closed"              '[ "$(code -X POST -H content-type:application/json -d "{\"business_name\":\"X Y\",\"email\":\"x@y.rw\",\"password\":\"password123\"}" $BASE/api/auth/register)" = 403 ]'
-check "Meta verify handshake echoes challenge"  '[ "$(curl -s $K "$BASE/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=$VERIFY&hub.challenge=4242")" = 4242 ]'
+check "Meta verify handshake echoes challenge"  '[ "$(printf "url = %s\n" "$BASE/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=$VERIFY&hub.challenge=4242" | curl -s $K -K -)" = 4242 ]'
 check "Meta verify rejects wrong token"         '[ "$(code "$BASE/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=1")" = 403 ]'
 check "unsigned webhook rejected"               '[ "$(code -X POST -H content-type:application/json -d "{}" $BASE/webhooks/whatsapp)" = 401 ]'
 BODY='{"object":"whatsapp_business_account","entry":[]}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$APPSECRET" | sed 's/^.* //')
+# Signed with the env file's App secret, so the check fails when the running API holds a different one. openssl takes
+# an HMAC key only as an argument, so the API image's python signs: key and body arrive on stdin, and the container's
+# own copy of the secret is not used.
+SIG=$({ printf '%s\n' "$APPSECRET"; printf '%s' "$BODY"; } | $COMPOSE exec -T backend python -c 'import hashlib, hmac, sys
+key = sys.stdin.buffer.readline().rstrip(b"\n")
+print(hmac.new(key, sys.stdin.buffer.read(), hashlib.sha256).hexdigest())')
 check "signed webhook accepted"                 '[ "$(code -X POST -H content-type:application/json -H "X-Hub-Signature-256: sha256=$SIG" -d "$BODY" $BASE/webhooks/whatsapp)" = 200 ]'
 unpublished() { [ "$(docker inspect -f "{{json .HostConfig.PortBindings}}" "$($COMPOSE ps -q "$1")")" = "{}" ]; }
 check "PostgreSQL not published"                'unpublished db'
@@ -45,6 +53,6 @@ check "log rotation configured"                 '[ "$(docker inspect -f "{{index
 check "no test tooling in the API image"        '! $COMPOSE exec -T backend python -c "import pytest"'
 check "no tests, evals or demo seed in the image" '$COMPOSE exec -T backend sh -c "test ! -e tests && test ! -e evals && test ! -e seed"'
 check "API runs as non-root"                    '[ "$($COMPOSE exec -T backend id -u)" != 0 ]'
-check "secrets not in logs"                     '! $COMPOSE logs --no-color 2>/dev/null | grep -qF "$VERIFY"'
+check "secrets not in logs"                     '! $COMPOSE logs --no-color 2>/dev/null | grep -qF -f <(printf "%s\n" "$VERIFY")'
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

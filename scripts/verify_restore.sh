@@ -11,13 +11,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+CUSTOM_STACK=${COMPOSE:+yes}
 COMPOSE=${COMPOSE:-docker compose}
 # The same folder backup.sh writes to (BACKUP_DIR), so a scheduled run verifies the newest REAL backup.
 DUMP=${1:-$(ls -1t "${BACKUP_DIR:-backups}"/duka-*.dump 2>/dev/null | head -1)}
 [ -n "$DUMP" ] && [ -f "$DUMP" ] || { echo "no backup found" >&2; exit 1; }
-DB_USER=${POSTGRES_USER:-$(grep -E '^POSTGRES_USER=' .env 2>/dev/null | cut -d= -f2 || true)}
-DB_PASSWORD=${POSTGRES_PASSWORD:-$(grep -E '^POSTGRES_PASSWORD=' .env 2>/dev/null | cut -d= -f2 || true)}
-DB_USER=${DB_USER:-commerce}; DB_PASSWORD=${DB_PASSWORD:-commerce}
+DB_USER=${POSTGRES_USER:-$(grep -E '^POSTGRES_USER=' .env 2>/dev/null | cut -d= -f2- || true)}
+DB_PASSWORD=${POSTGRES_PASSWORD:-$(grep -E '^POSTGRES_PASSWORD=' .env 2>/dev/null | cut -d= -f2- || true)}
+# docker-compose.yml's defaults hold for the development stack only; any other stack (COMPOSE set) names its own.
+if [ -z "$CUSTOM_STACK" ]; then DB_USER=${DB_USER:-commerce}; DB_PASSWORD=${DB_PASSWORD:-commerce}; fi
+missing() { echo "$1 is not set: export it from the stack's env file (docs/OPERATIONS.md › Backups)" >&2; exit 1; }
+[ -n "$DB_USER" ] || missing POSTGRES_USER
+[ -n "$DB_PASSWORD" ] || missing POSTGRES_PASSWORD
 SCRATCH="duka_verify_$(date -u +%Y%m%d%H%M%S)"
 VERIFY_EMAIL=${VERIFY_EMAIL:-}       # optional: a real user to log in as on the restored copy
 VERIFY_PASSWORD=${VERIFY_PASSWORD:-}
