@@ -243,7 +243,8 @@ headers too):
 ```bash
 curl -s $BASE/healthz                                   # {"status":"ok"}
 curl -s $BASE/readyz                                    # {"status":"ok"}
-curl -s -H "Authorization: Bearer $OPS_TOKEN" "$BASE/readyz?details=1"   # database, migrations, workers: ok
+read -rs OPS_TOKEN                                      # paste the ops token from Render: not echoed, not in history
+printf 'Authorization: Bearer %s\n' "$OPS_TOKEN" | curl -s -H @- "$BASE/readyz?details=1"   # database, migrations, workers: ok
 curl -s -o /dev/null -w '%{http_code}
 ' $BASE/docs    # 404 (docs off in production)
 curl -s -o /dev/null -w '%{http_code}

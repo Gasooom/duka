@@ -246,9 +246,11 @@ crontab or a saved script.
 
 **Self-hosted production** (`/opt/duka`, `deploy/docker-compose.prod.yml`): point the scripts at the production stack.
 `COMPOSE` selects it (the default, `docker compose`, is the development compose file), and the database settings come
-from `deploy/.env.production` (otherwise the scripts read the repository's `.env`, which a production server does not
-have, and fall back to the development defaults). Each cron line reads them from the `chmod 600` env file when it
-runs. `export` is a shell builtin, so the values never appear in the crontab or on a process's command line.
+from `deploy/.env.production`. With `COMPOSE` set but a `POSTGRES_*` variable missing, `verify_restore.sh` stops and
+names it; `backup.sh` and `restore.sh` read the repository's `.env`, which a production server does not have, and then
+use the development defaults (`commerce`) instead of the production database's. Each cron line reads the settings from
+the `chmod 600` env file when it runs. `export` is a shell builtin, so the values never appear in the crontab or on a
+process's command line.
 `backup.sh` needs `POSTGRES_USER` and `POSTGRES_DB`; `verify_restore.sh` also needs `POSTGRES_PASSWORD` to open the
 restored copy with the app. The same lines are in `docs/DEPLOYMENT.md` §6.
 

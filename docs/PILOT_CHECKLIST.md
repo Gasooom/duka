@@ -4,8 +4,9 @@ The order of work for the first pilot. Commands and pass conditions live in `doc
 `docs/DEPLOYMENT.md` › R (Render) and `docs/OPERATIONS.md`; this file only orders them. Record date, person and result
 next to each item. An item is done when its pass condition holds, not when its command has run.
 
-Status 2026-10-11: code at `f20d376`, CI run #20 green. Nothing external has been tested: no Render service, no
-WhatsApp number, no production AI key, no merchant. The pilot is not production-ready.
+Status 2026-10-11: code at `9cae2dd`. CI last passed at `f20d376` (run #20); the commits since change only operator
+scripts, their tests and documentation. Nothing external has been tested: no Render service, no WhatsApp number, no
+production AI key, no merchant. The pilot is not production-ready.
 
 **Decisions so far:** hosting on **Render** (`render.yaml`: `duka-api`, `duka-dashboard`, PostgreSQL with pgvector,
 one instance each). Languages: **as the merchant needs**, among English, Arabic (MSA and Sudanese), Kinyarwanda,

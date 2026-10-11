@@ -4,7 +4,8 @@
 #   scripts/backup.sh                      # writes backups/duka-<UTC timestamp>.dump (+ .manifest, .sha256)
 #   BACKUP_DIR=/srv/duka/backups BACKUP_RETENTION_DAYS=14 scripts/backup.sh
 #
-# Schedule it (host crontab):  15 2 * * *  cd /opt/duka && scripts/backup.sh >> /var/log/duka-backup.log 2>&1
+# The examples above use the development stack's defaults. Self-hosted production needs COMPOSE and POSTGRES_* from
+# deploy/.env.production: its cron lines are in docs/OPERATIONS.md › Backups (and docs/DEPLOYMENT.md §6).
 # A backup on the same server does not survive the loss of that server: copy BACKUP_DIR off the machine
 # (see docs/OPERATIONS.md). Verify regularly with scripts/verify_restore.sh.
 set -euo pipefail
