@@ -45,16 +45,23 @@ else
   echo "warning: no manifest next to the dump; skipping row-count comparison"
 fi
 
-MSYS_NO_PATHCONV=1 $COMPOSE run --rm --no-deps -T \
-  -e DATABASE_URL="postgresql+psycopg://$DB_USER:$DB_PASSWORD@db:5432/$SCRATCH" -e BACKGROUND_WORKERS=0 \
-  -e VERIFY_EMAIL="$VERIFY_EMAIL" -e VERIFY_PASSWORD="$VERIFY_PASSWORD" backend python - <<'PY'
+# Secrets reach the one-off container by name (`-e VAR`: docker takes the value from this script's environment),
+# never as `-e VAR=value`, which any local user could read in the process list. A name that is not set falls back to
+# the service's own value, the LIVE database URL: the check below refuses to run on any database but the copy.
+export DATABASE_URL="postgresql+psycopg://$DB_USER:$DB_PASSWORD@db:5432/$SCRATCH" VERIFY_EMAIL VERIFY_PASSWORD
+MSYS_NO_PATHCONV=1 $COMPOSE run --rm --no-deps -T -e DATABASE_URL -e BACKGROUND_WORKERS=0 \
+  -e VERIFY_DATABASE="$SCRATCH" -e VERIFY_EMAIL -e VERIFY_PASSWORD backend python - <<'PY'
 import os, sys
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.db.session import SessionLocal
 from app.models import Business, User
 from app import ops
 from app.core.security import verify_password
 with SessionLocal() as db:
+    connected = db.scalar(text("SELECT current_database()"))
+    if connected != os.environ.get("VERIFY_DATABASE"):
+        print(f"  connected to {connected!r}, not the restored copy: refusing to check it")
+        sys.exit(1)
     level, checks = ops.readiness(db, workers_running=False)
     critical = [c for c in checks if c.level == "down"]
     for c in checks:
